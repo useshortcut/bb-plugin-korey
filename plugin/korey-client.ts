@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { AttachmentFile } from "./attachments.js";
 import type { z } from "zod";
-import { EndpointByMethod } from "./generated/korey-api.js";
+import { EndpointByMethod } from "../generated/korey-api.js";
 
 const DEFAULT_BASE_URL = "https://api.korey.ai/api/v1";
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;

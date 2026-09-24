@@ -204,6 +204,9 @@ for transient network errors, `429`, and `5xx` responses and honors `Retry-After
 
 ## Development
 
+TypeScript source, tests, test helpers, and the Vitest configuration live in
+`plugin/`.
+
 Use Node.js 24, as specified in `.nvmrc`:
 
 ```sh

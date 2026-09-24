@@ -25,9 +25,9 @@
     "branding": {
       "icon": "Sparkles"
     },
-    "server": "./server.ts",
-    "app": "./app.tsx",
-    "host": "./host.ts",
+    "server": "./plugin/server.ts",
+    "app": "./plugin/app.tsx",
+    "host": "./plugin/host.ts",
     "skills": [
       "skills"
     ]
@@ -46,7 +46,7 @@
     "format": "prettier --write .",
     "generate:openapi": "typed-openapi korey.openapi.json --output generated/korey-api.ts --runtime zod --validate-side output --no-runtime-types --no-include-client --format",
     "openapi:sync": "node scripts/sync-korey-openapi.mjs",
-    "test": "vitest run --config vitest.config.ts",
+    "test": "vitest run --config plugin/vitest.config.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
