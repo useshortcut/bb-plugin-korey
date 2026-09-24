@@ -3,7 +3,7 @@
   <img src="assets/korey-logo-light.svg" alt="Korey" width="196">
 </picture>
 
-# Korey for BB
+# bb-plugin-korey
 
 **Ask Korey to work with your connected tools from any BB harness.**
 
