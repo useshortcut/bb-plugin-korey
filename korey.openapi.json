@@ -1,0 +1,1615 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Korey API",
+    "description": "The Korey API is a REST API that lets you build integrations on top of\nKorey threads and messages. All requests are made to:\n\n```\nhttps://api.korey.ai/api/v1\n```\n\nAll endpoints require a Bearer token and return JSON.\nGet started by creating a personal access token at **Settings → API Tokens**.\n\n## Authentication\n\nAll endpoints require a Bearer token passed in the `Authorization` header:\n\n```\nAuthorization: Bearer kt_pat_<token>\n```\n\nCreate a personal access token at **Settings → API Tokens**. Each token\ncarries a set of scopes that gate access to specific endpoints. If a token\nlacks the required scope for an endpoint, the response is `403 Forbidden`\nwith a `required_scope` field indicating what is needed.\n\n## Pagination\n\nList endpoints use **keyset pagination** based on item IDs. Each response\nincludes `first_id`, `last_id`, and `has_more`.\n\nTo fetch the next page, pass `?after=<last_id>` from the previous response.\nWhen `has_more` is `false` there are no further pages.\n\nThe sort order used on the first request must be kept consistent across\nall subsequent page requests. Changing `sort_by` or `sort_dir` mid-pagination\nwill produce unexpected results.\n\nFilters are also **not** carried between pages. If you paginate with filters\n(e.g. `?owned=true`), pass the same filters on every request.\n\nCursors do not expire — you can resume pagination at any time.\n\n## Thread State Lifecycle\n\nEvery thread has a `state` field that indicates whether it is ready to accept\nnew messages or is currently processing a response.\n\n| State | Meaning |\n|---|---|\n| `ready` | The thread is idle and accepts new messages via `POST /threads/:id/messages` |\n| `waiting` | A message has been queued and is awaiting the AI processor |\n| `active` | The LLM is actively generating a response |\n| `error` | Processing failed; inspect the response for details |\n| `interrupted` | Generation was interrupted (e.g. by a conflicting message) |\n\n**You may only send a new message when the thread is in `ready` state.**\nSending while `waiting` or `active` returns `409 Conflict`.\n\nThe simplest way to know when a thread is `ready` again after sending a message\nis to open the SSE stream (`GET /threads/:id/messages/:msg-id/response/stream`)\nand wait for the `done` event — it is only emitted after the thread returns to\n`ready`. Alternatively, poll `GET /threads/:id` and check the `state` field.\n\n## Feedback\n\nYou can rate any AI response with a thumbs up or down via\n`POST /threads/:id/messages/:msg-id/feedback`. Optionally include a short\nfree-text comment. One rating per user per message — submitting again\nupdates the previous rating.\n\n## Conversational Continuity\n\nThreads are persistent conversations. For multi-turn interactions, reuse the\nsame thread by sending subsequent messages to\n`POST /threads/:thread-id/messages` rather than creating a new thread each\ntime. Store the `thread_id` from the initial response and pass it to all\nfollow-up messages.\n\nEvery thread and message includes an `app_url` field — a direct link to that\nitem in the Korey web app, useful for surfacing context to users.\n\nSet a meaningful `name` when creating a thread. It appears in the Korey UI\nand helps users identify the conversation later.\n\n## Error State Recovery\n\nA thread in `error` state is still readable — you can fetch its messages via\n`GET /threads/:id/messages` — but it cannot receive new messages. There is\ncurrently no way to resume or reset a thread in `error` state.\n\nTo continue work after an error, create a new thread and seed it with a\nsummary of the previous conversation. A useful pattern:\n\n1. Fetch the messages from the errored thread.\n2. Summarize the relevant context (e.g. what was being worked on, what was\n   decided, where it left off).\n3. Create a new thread with that summary as the initial message.\n\n\n## File attachments\n\nTo include files in the first message, create a thread with `POST /threads`\nwithout `text`. The response contains `thread_id` and `message_id: null`;\nno AI response starts until you send a message. Existing text-only creation\ncontinues to return the initial message ID.\n\nUpload files with `POST /threads/:thread-id/attachments`, using multipart form\ndata and a distinct field name for each file (`attachments[0]`,\n`attachments[1]`, etc.). This requires `threads:write` and a thread you own.\nThe response is an array of `{id, filename}` objects. Uploading stores files;\nit does not send a message or start an AI response.\n\nSend `POST /threads/:thread-id/messages` with `text` and an optional\n`attachment_ids` array containing the uploaded IDs. IDs must belong to that\nthread. The files become context for Korey's response. You can use the same\nflow to add files to an existing conversation once it is ready for a message.\n\nUploads use the web app's file types and limits: JPEG, PNG, GIF, and WebP\nimages up to 3 MiB; PDFs up to 2.5 MiB and 100 pages; and plain text, Markdown,\nand CSV files up to 0.5 MiB. Password-protected PDFs are rejected. Image size\nvalidation and resizing also match the web app. A request can upload up to\n5 files, with up to 25 uploaded files total per thread.\nThese are Korey's shared upload limits, also used by the web app. The 5-file\nlimit applies to each upload request, not to the number of attachments in a\nmessage. A message can reference up to 25 uploaded files from the same thread,\nincluding files from multiple upload requests. For example, upload 5 files and\nthen 1 more file, and send a single message referencing all 6 attachment IDs.\n",
+    "version": "v1"
+  },
+  "servers": [
+    {
+      "url": "https://api.korey.ai/api/v1",
+      "description": "Current environment"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Identity",
+      "description": "Endpoints relating to the authenticated user and their organization."
+    },
+    {
+      "name": "Threads",
+      "description": "Endpoints for reading and interacting with AI conversation threads."
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Personal access token (`kt_pat_...`). Create one at Settings → API Tokens."
+      }
+    }
+  },
+  "paths": {
+    "/threads/{thread-id}/messages": {
+      "get": {
+        "summary": "List messages",
+        "description": "Lists active messages in a thread, ordered by created_at ASC. Pass last_id as ?after= to paginate.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "description": "Array of message objects.",
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "description": "Unique message ID.",
+                            "type": "string"
+                          },
+                          "thread_id": {
+                            "description": "ID of the thread this message belongs to.",
+                            "type": "string"
+                          },
+                          "role": {
+                            "description": "Who sent the message.",
+                            "type": "string",
+                            "enum": [
+                              "user",
+                              "assistant",
+                              "summary"
+                            ]
+                          },
+                          "contents": {
+                            "description": "Ordered list of content blocks that make up the message.",
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "const": "text"
+                                    },
+                                    "text": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "text"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "const": "image"
+                                    },
+                                    "attachment_id": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "attachment_id"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "const": "document"
+                                    },
+                                    "attachment_id": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "attachment_id"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "const": "user_get_choice"
+                                    },
+                                    "tool_use_id": {
+                                      "type": "string"
+                                    },
+                                    "question": {
+                                      "type": "string"
+                                    },
+                                    "choices": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "tool_use_id",
+                                    "question",
+                                    "choices"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            }
+                          },
+                          "created_at": {
+                            "description": "ISO 8601 timestamp when the message was created.",
+                            "type": "string"
+                          },
+                          "app_url": {
+                            "description": "Direct link to this message in the Korey web app.",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "thread_id",
+                          "role",
+                          "contents",
+                          "created_at",
+                          "app_url"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "first_id": {
+                      "description": "ID of the first message in the page.",
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "last_id": {
+                      "description": "ID of the last message in the page. Pass as ?after= to fetch the next page.",
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "has_more": {
+                      "description": "True when there are more messages beyond this page.",
+                      "type": "boolean"
+                    },
+                    "limit": {
+                      "description": "The limit applied to this request.",
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "first_id",
+                    "last_id",
+                    "has_more",
+                    "limit"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — Bearer token required or invalid"
+          },
+          "403": {
+            "description": "Forbidden — token does not have required scope"
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "thread-id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "The thread ID."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "Maximum number of messages to return. Default: `50`, max `200`."
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Return messages after this message ID (for pagination)."
+          }
+        ],
+        "tags": [
+          "Threads"
+        ],
+        "security": [
+          {
+            "bearerAuth": [
+              "threads:read"
+            ]
+          }
+        ],
+        "x-required-scope": "threads:read"
+      },
+      "post": {
+        "summary": "Send message",
+        "description": "Sends a user message with optional uploaded attachments to a thread and triggers AI processing.\n\nThe thread must be in `ready` state — the only state in which new messages are\naccepted. Returns 409 if the thread is not ready.\n\nAfter sending, the thread transitions:\n- `waiting` — message is queued for the AI processor\n- `active`  — the LLM is generating a response\n- `ready`   — response is complete; the thread accepts new messages again\n\nUse the SSE stream endpoint or poll the thread `state` field to know when\nthe thread returns to `ready`.",
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message_id": {
+                      "description": "ID of the newly created message. Use this to poll or stream the AI response.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "message_id"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — Bearer token required or invalid"
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "thread-id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "The thread ID."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "description": "The user message text to send.",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "attachment_ids": {
+                    "description": "IDs of files uploaded to this thread, in display order. May reference files from multiple upload requests, up to the thread limit of 25 attachments.",
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "maxItems": 25
+                  }
+                },
+                "required": [
+                  "text"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "tags": [
+          "Threads"
+        ],
+        "security": [
+          {
+            "bearerAuth": [
+              "threads:write"
+            ]
+          }
+        ],
+        "x-required-scope": "threads:write"
+      }
+    },
+    "/threads/{thread-id}/messages/{message-id}/feedback": {
+      "post": {
+        "summary": "Submit feedback",
+        "description": "Submits a thumbs-up or thumbs-down rating for an AI message. One feedback entry per user per message — submitting again updates the previous rating.",
+        "responses": {
+          "204": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — Bearer token required or invalid"
+          },
+          "403": {
+            "description": "Forbidden — token does not have required scope"
+          }
+        },
+        "parameters": [
+          {
+            "name": "thread-id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "The thread ID."
+          },
+          {
+            "name": "message-id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "The message ID."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "positive": {
+                    "description": "True for thumbs up, false for thumbs down.",
+                    "type": "boolean"
+                  },
+                  "feedback_text": {
+                    "description": "Optional free-text comment accompanying the rating.",
+                    "type": "string",
+                    "maxLength": 1024
+                  }
+                },
+                "required": [
+                  "positive"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "tags": [
+          "Threads"
+        ],
+        "security": [
+          {
+            "bearerAuth": [
+              "threads:write"
+            ]
+          }
+        ],
+        "x-required-scope": "threads:write"
+      }
+    },
+    "/threads/{thread-id}/messages/{message-id}/response/stream": {
+      "get": {
+        "summary": "Stream AI response",
+        "description": "SSE stream for the AI response to a user message.\n\nEvents are sent in SSE format:\n\n```\nevent: <type>\ndata: <json>\n\n```\n\n| Event | Data | Description |\n|---|---|---|\n| `token` | `{\"token\": \"...\"}` | A text chunk of the AI response |\n| `error` | `{\"message\": \"...\"}` | An error occurred |\n| `done` | `{}` | Response is fully complete — thread is back in `ready` state |\n\n`done` is only emitted after the LLM has finished generating and the thread\nhas returned to `ready`. Once you receive `done` the thread accepts new messages.\nThinking and status events are filtered. The stream closes after `done` or `error`.",
+        "responses": {
+          "401": {
+            "description": "Unauthorized — Bearer token required or invalid"
+          },
+          "403": {
+            "description": "Forbidden — token does not have required scope"
+          }
+        },
+        "parameters": [
+          {
+            "name": "thread-id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "The thread ID."
+          },
+          {
+            "name": "message-id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "The message ID."
+          }
+        ],
+        "tags": [
+          "Threads"
+        ],
+        "security": [
+          {
+            "bearerAuth": [
+              "threads:read"
+            ]
+          }
+        ],
+        "x-required-scope": "threads:read",
+        "x-sse-events": [
+          {
+            "name": "token",
+            "data": {
+              "token": "string"
+            },
+            "description": "Text chunk of the AI response"
+          },
+          {
+            "name": "error",
+            "data": {
+              "message": "string"
+            },
+            "description": "An error occurred"
+          },
+          {
+            "name": "done",
+            "data": {},
+            "description": "Response complete"
+          }
+        ]
+      }
+    },
+    "/threads": {
+      "get": {
+        "summary": "List threads",
+        "description": "Lists visible threads for the authenticated user. Pass `last_id` as `?after=` to paginate.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "description": "Array of thread objects.",
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "description": "Unique thread ID.",
+                            "type": "string"
+                          },
+                          "name": {
+                            "description": "Optional display name for the thread.",
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "state": {
+                            "description": "Current processing state of the thread.",
+                            "type": "string",
+                            "enum": [
+                              "ready",
+                              "waiting",
+                              "active",
+                              "error",
+                              "interrupted"
+                            ]
+                          },
+                          "is_private": {
+                            "description": "When true the thread is only visible to its owner.",
+                            "type": "boolean"
+                          },
+                          "archived": {
+                            "description": "Whether the thread has been archived.",
+                            "type": "boolean"
+                          },
+                          "owner": {
+                            "description": "The user who created the thread.",
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "description": "Owner user ID.",
+                                "type": "string"
+                              },
+                              "name": {
+                                "description": "Owner display name.",
+                                "oneOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "name"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "created_at": {
+                            "description": "ISO 8601 timestamp when the thread was created.",
+                            "type": "string"
+                          },
+                          "updated_at": {
+                            "description": "ISO 8601 timestamp when the thread was last updated.",
+                            "type": "string"
+                          },
+                          "app_url": {
+                            "description": "Direct link to this thread in the Korey web app.",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "state",
+                          "is_private",
+                          "archived",
+                          "owner",
+                          "created_at",
+                          "updated_at",
+                          "app_url"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "first_id": {
+                      "description": "ID of the first item in the page. null when the page is empty.",
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "last_id": {
+                      "description": "ID of the last item in the page. Pass as ?after= to fetch the next page.",
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "has_more": {
+                      "description": "True when there are more results beyond this page.",
+                      "type": "boolean"
+                    },
+                    "limit": {
+                      "description": "The limit applied to this request.",
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "first_id",
+                    "last_id",
+                    "has_more",
+                    "limit"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — Bearer token required or invalid"
+          },
+          "403": {
+            "description": "Forbidden — token does not have required scope"
+          }
+        },
+        "parameters": [
+          {
+            "name": "owned",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "true = only threads you own; false = threads owned by others; omit = all visible threads."
+          },
+          {
+            "name": "private",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "true = private threads only; false = public threads only; omit = both."
+          },
+          {
+            "name": "archived",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "true to include archived threads. Default: `false`."
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Full-text search query against thread names and messages."
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "updated_at",
+                "created_at"
+              ]
+            },
+            "description": "Field to sort by. Default: `updated_at`."
+          },
+          {
+            "name": "sort_dir",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            },
+            "description": "Sort direction. Default: `desc`."
+          },
+          {
+            "name": "updated_since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "ISO 8601 timestamp — return only threads updated after this time."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "Maximum number of threads to return. Default: `50`, max `200`."
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Return threads after this thread ID (for pagination)."
+          }
+        ],
+        "tags": [
+          "Threads"
+        ],
+        "security": [
+          {
+            "bearerAuth": [
+              "threads:read"
+            ]
+          }
+        ],
+        "x-required-scope": "threads:read"
+      },
+      "post": {
+        "summary": "Create thread",
+        "description": "Creates a thread, optionally with an initial text message. Omit text to upload attachments before sending the first message. Returns 409 on conflict.",
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "thread_id": {
+                      "description": "ID of the newly created thread.",
+                      "type": "string"
+                    },
+                    "message_id": {
+                      "description": "ID of the initial message, or null when no initial text was supplied.",
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "thread_id",
+                    "message_id"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — Bearer token required or invalid"
+          },
+          "403": {
+            "description": "Forbidden — token does not have required scope"
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "description": "Initial message text. Omit to create an empty thread, upload files, and then send the first message.",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "name": {
+                    "description": "Optional display name for the thread.",
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "is_private": {
+                    "description": "When true the thread is only visible to its owner. Defaults to false.",
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "tags": [
+          "Threads"
+        ],
+        "security": [
+          {
+            "bearerAuth": [
+              "threads:write"
+            ]
+          }
+        ],
+        "x-required-scope": "threads:write"
+      }
+    },
+    "/threads/{thread-id}/attachments": {
+      "post": {
+        "summary": "Upload attachments",
+        "description": "Uploads files to a thread you own. Use the returned IDs in attachment_ids when sending a message. Uploads alone do not send a message. Accepts the same file types and limits as the web app: up to 5 files per upload request and 25 uploaded files total per thread. A message may reference files from multiple upload requests. Use a distinct multipart field name for each file, such as attachments[0], attachments[1].",
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "filename": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "filename"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — Bearer token required or invalid"
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "object",
+                      "properties": {}
+                    }
+                  },
+                  "required": [
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "thread-id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "The thread ID."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "attachments[0]": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                },
+                "required": [
+                  "attachments[0]"
+                ],
+                "additionalProperties": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Threads"
+        ],
+        "security": [
+          {
+            "bearerAuth": [
+              "threads:write"
+            ]
+          }
+        ],
+        "x-required-scope": "threads:write"
+      }
+    },
+    "/threads/{thread-id}": {
+      "get": {
+        "summary": "Get thread",
+        "description": "Returns a single thread by ID. 404 for private threads not owned by the caller.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "description": "Unique thread ID.",
+                      "type": "string"
+                    },
+                    "name": {
+                      "description": "Optional display name for the thread.",
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "state": {
+                      "description": "Current processing state of the thread.",
+                      "type": "string",
+                      "enum": [
+                        "ready",
+                        "waiting",
+                        "active",
+                        "error",
+                        "interrupted"
+                      ]
+                    },
+                    "is_private": {
+                      "description": "When true the thread is only visible to its owner.",
+                      "type": "boolean"
+                    },
+                    "archived": {
+                      "description": "Whether the thread has been archived.",
+                      "type": "boolean"
+                    },
+                    "owner": {
+                      "description": "The user who created the thread.",
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "description": "Owner user ID.",
+                          "type": "string"
+                        },
+                        "name": {
+                          "description": "Owner display name.",
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "created_at": {
+                      "description": "ISO 8601 timestamp when the thread was created.",
+                      "type": "string"
+                    },
+                    "updated_at": {
+                      "description": "ISO 8601 timestamp when the thread was last updated.",
+                      "type": "string"
+                    },
+                    "app_url": {
+                      "description": "Direct link to this thread in the Korey web app.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "state",
+                    "is_private",
+                    "archived",
+                    "owner",
+                    "created_at",
+                    "updated_at",
+                    "app_url"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — Bearer token required or invalid"
+          },
+          "403": {
+            "description": "Forbidden — token does not have required scope"
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "thread-id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "The thread ID."
+          }
+        ],
+        "tags": [
+          "Threads"
+        ],
+        "security": [
+          {
+            "bearerAuth": [
+              "threads:read"
+            ]
+          }
+        ],
+        "x-required-scope": "threads:read"
+      }
+    },
+    "/me": {
+      "get": {
+        "summary": "Get current user",
+        "description": "Returns the authenticated user's identity and organization.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sub": {
+                      "description": "JWT subject — stable string ID for the user.",
+                      "type": "string"
+                    },
+                    "name": {
+                      "description": "Display name of the user.",
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "email": {
+                      "description": "Email address of the user.",
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "korey_user_id": {
+                      "description": "Internal numeric user ID.",
+                      "type": "integer"
+                    },
+                    "korey_organization_id": {
+                      "description": "Internal numeric organization ID.",
+                      "type": "integer"
+                    },
+                    "korey_organization_slug": {
+                      "description": "URL-safe organization slug.",
+                      "type": "string"
+                    },
+                    "role": {
+                      "description": "User role within the organization.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "sub",
+                    "name",
+                    "email",
+                    "korey_user_id",
+                    "korey_organization_id",
+                    "korey_organization_slug",
+                    "role"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — Bearer token required or invalid"
+          },
+          "403": {
+            "description": "Forbidden — token does not have required scope"
+          }
+        },
+        "tags": [
+          "Identity"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/threads/{thread-id}/messages/{message-id}/response": {
+      "get": {
+        "summary": "Poll for AI response",
+        "description": "Polls for the AI response to a user message.\n\nReturns `202 Accepted` while the thread is in `waiting` or `active` state.\nReturns `200 OK` once the thread returns to `ready` and the full response is\navailable. Returns `404` if no response exists for the message.\n\nPrefer the SSE stream endpoint for lower latency.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "const": "complete"
+                    },
+                    "messages": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "description": "Unique message ID.",
+                            "type": "string"
+                          },
+                          "thread_id": {
+                            "description": "ID of the thread this message belongs to.",
+                            "type": "string"
+                          },
+                          "role": {
+                            "description": "Who sent the message.",
+                            "type": "string",
+                            "enum": [
+                              "user",
+                              "assistant",
+                              "summary"
+                            ]
+                          },
+                          "contents": {
+                            "description": "Ordered list of content blocks that make up the message.",
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "const": "text"
+                                    },
+                                    "text": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "text"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "const": "image"
+                                    },
+                                    "attachment_id": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "attachment_id"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "const": "document"
+                                    },
+                                    "attachment_id": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "attachment_id"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "const": "user_get_choice"
+                                    },
+                                    "tool_use_id": {
+                                      "type": "string"
+                                    },
+                                    "question": {
+                                      "type": "string"
+                                    },
+                                    "choices": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "tool_use_id",
+                                    "question",
+                                    "choices"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            }
+                          },
+                          "created_at": {
+                            "description": "ISO 8601 timestamp when the message was created.",
+                            "type": "string"
+                          },
+                          "app_url": {
+                            "description": "Direct link to this message in the Korey web app.",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "thread_id",
+                          "role",
+                          "contents",
+                          "created_at",
+                          "app_url"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "messages"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "const": "processing"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — Bearer token required or invalid"
+          },
+          "403": {
+            "description": "Forbidden — token does not have required scope"
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "thread-id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "The thread ID."
+          },
+          {
+            "name": "message-id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "The message ID."
+          }
+        ],
+        "tags": [
+          "Threads"
+        ],
+        "security": [
+          {
+            "bearerAuth": [
+              "threads:read"
+            ]
+          }
+        ],
+        "x-required-scope": "threads:read"
+      }
+    }
+  }
+}
