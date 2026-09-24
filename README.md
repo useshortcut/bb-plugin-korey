@@ -1,9 +1,9 @@
+# bb-plugin-korey
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/korey-logo-dark.svg">
   <img src="assets/korey-logo-light.svg" alt="Korey" width="196">
 </picture>
-
-# bb-plugin-korey
 
 **Ask Korey to work with your connected tools from any BB harness.**
 
