@@ -81,13 +81,13 @@ const CLI_COMMANDS = [
   },
   {
     name: "ask",
-    summary: "Ask Korey for consultation or a draft",
+    summary: "Ask Korey to research connected tools or prepare a draft",
     usage:
       "bb korey ask <message...> [--file <path> ...] [--bb-thread <id>] [--json]",
   },
   {
     name: "shortcut",
-    summary: "Request an interactively approved Shortcut create or update",
+    summary: "Ask Korey to create or update a Shortcut Story with approval",
     usage: [
       "bb korey shortcut create <instruction...> [--file <path> ...] [--bb-thread <id>] [--json]",
       "bb korey shortcut update <story-id> <instruction...> [--file <path> ...] [--bb-thread <id>] [--json]",
@@ -1373,7 +1373,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.cli.register({
     name: "korey",
-    summary: "Consult Korey and manage linked conversations",
+    summary: "Ask Korey to work with your connected tools",
     commands: CLI_COMMANDS,
     async run(argv, context) {
       const [command, ...rest] = argv;
@@ -1730,9 +1730,9 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: "korey_ask",
     description:
-      "Ask Korey for product analysis or a draft in the conversation linked to this bb thread. The plugin instructs Korey not to write to connected systems, but Korey's API does not technically restrict connector capabilities.",
+      "Ask Korey to research connected tools, answer questions, or prepare drafts using its existing connector access. Continues the private Korey conversation linked to this BB thread. The plugin instructs Korey not to modify connected systems.",
     instructions:
-      "Use korey_ask for consultation and drafting. Do not represent it as a hard capability sandbox. Use korey_shortcut_change for an intended Shortcut write; that tool always displays an immutable approval request to the user.",
+      'For "Ask Korey ..." research and drafting requests, delegate the desired outcome and relevant context to Korey. It uses the services connected in Korey, such as Shortcut, Sentry, and LaunchDarkly. Use korey_shortcut_change for Shortcut Story creation or updates; that tool displays an immutable approval request. The consultation restriction is a prompt instruction, not a connector permission boundary.',
     parameters: z
       .object({
         prompt: z.string().trim().min(1).max(20_000),
@@ -1764,7 +1764,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: "korey_shortcut_change",
     description:
-      "Request a Shortcut Story create or update through Korey. Before any write-intended message is sent, bb shows the user an approval bound to the exact action, destination, instruction, and attachment hashes.",
+      "Ask Korey to create or update a Shortcut Story using its connector and workspace conventions. Before sending the request, BB shows the user an approval bound to the exact action, destination, instruction, and attachment hashes.",
     instructions:
       "Call only when the user requested the exact Shortcut create or update. The plugin obtains its own interactive approval; do not claim approval in tool arguments. Never retry a failed or unresolved operation by calling this tool again. Inspect it with korey_get_operation, then use korey_resume_operation or korey_reconcile_operation when applicable.",
     parameters: shortcutChangeInputSchema,
@@ -1855,6 +1855,6 @@ export default async function plugin(bb: BbPluginApi) {
     ],
     skills: ["korey"],
     instructions:
-      "Korey is connected through a provider-independent bb plugin. Consultation is prompt-mediated, while intended Shortcut writes require a bb-owned approval. Never replace or automatically retry an ambiguous operation; inspect, resume, or reconcile its existing operation ID.",
+      'Korey brings its connected services to every BB harness. For "Ask Korey ..." requests, delegate the user’s goal and context to Korey. Use korey_ask for connector research, analysis, and drafts, and korey_shortcut_change for approved Shortcut Story creation or updates. Connector setup and reauthentication happen in Korey. Consultation is prompt-mediated; other connector writes are not supported by this plugin. Never replace or automatically retry an ambiguous operation; inspect, resume, or reconcile its existing operation ID.',
   }));
 }

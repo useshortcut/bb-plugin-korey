@@ -1,246 +1,83 @@
-# bb-plugin-korey
+# Korey for BB
 
-A BB plugin maintained by Shortcut for consulting Korey from any provider, maintaining a
-private Korey conversation per BB thread, attaching workspace files, and
-sending explicitly approved Shortcut Story changes.
+**Ask Korey to work with your connected tools from any BB harness.**
 
-## Requirements
+BB lets you work across coding harnesses. Korey brings your connectors with you.
+Connect services such as Shortcut, Sentry, and LaunchDarkly in Korey, and use them
+from your BB conversations. Korey manages connector access and reauthentication
+in one place. Your BB harnesses share that access, without a separate MCP server
+to configure for each connector.
 
-- BB 0.40.0 or newer.
-- A Korey personal access token with `threads:read:own` and `threads:write`.
-- Linux, WSL2, or macOS for workspace file attachments.
-- The BB desktop or web app for Shortcut approval prompts. Third-party plugin
-  interactions are not currently rendered by the native mobile app.
+Give Korey the outcome and the context. It knows how to talk to the connected
+services and can use your workspace’s conventions to do the work. For example,
+you can delegate Story creation to Korey instead of walking your coding agent
+through Shortcut’s fields and workflow one step at a time.
 
-## Install
+## Ask Korey…
 
-Install from this repository's default branch:
+> Ask Korey to create a Shortcut Story for the bug we just investigated, with
+> reproduction steps and acceptance criteria.
 
-```sh
-bb plugin install https://github.com/useshortcut/bb-plugin-korey
-```
+> Ask Korey to summarize the Sentry errors introduced in our latest release.
 
-For local development:
+> Ask Korey which LaunchDarkly flags control the new checkout flow and who has
+> access to it.
 
-```sh
-nvm use
-bun install --frozen-lockfile
-bb plugin install .
-```
+> Ask Korey to compare this implementation plan with the existing Shortcut
+> Stories and point out what we missed.
 
-Add the Korey token under **Settings -> Installed plugins -> Korey**, then verify it:
+The plugin keeps a private Korey conversation linked to each BB thread, so you
+can follow up with more context, attach workspace files, and continue the same
+conversation as you change harnesses.
+
+The current version supports research, analysis, and drafts across Korey’s
+connected services, plus Shortcut Story creation and updates with a BB approval
+prompt. Available data and actions depend on the connectors and permissions in
+your Korey workspace. Story approvals use the BB desktop or web app.
+
+## Get started
+
+Requires BB 0.40.0 or newer and a Korey account.
+
+1. Connect the services you want to use in [Korey](https://korey.ai). See
+   [Korey’s connector guides](https://korey.ai/docs/connectors/overview) for setup.
+2. Create a Korey personal access token with `threads:read:own` and
+   `threads:write` scopes.
+3. Install the plugin:
+
+   ```sh
+   bb plugin install https://github.com/useshortcut/bb-plugin-korey
+   ```
+
+4. Add the token under **Settings → Installed plugins → Korey** in BB.
+5. Ask your agent: “Ask Korey…”
+
+Only the Korey connection is configured in BB. Keep each service’s connector
+settings and credentials in Korey, where reauthentication is handled across
+harnesses.
+
+Check your connection with:
 
 ```sh
 bb korey status
-bb korey threads
 ```
 
-This repository is intentionally marked `private` in `package.json` to prevent
-accidental npm publication. BB's managed Git installer installs runtime
-dependencies with scripts disabled and builds the server, app, and host
-artifacts itself.
-
-The repository root is the plugin: `package.json` declares the server, app,
-host, and skill entries. No BB checkout, collection manifest, or committed
-build output is required. The Git install tracks the default branch; use
-`bb plugin outdated` to inspect updates and `bb plugin update korey` to apply
-one. To pin a particular commit, install
-`git:https://github.com/useshortcut/bb-plugin-korey.git@<commit-sha>` instead.
-
-## Use
-
-Ask Korey for analysis or a draft from an agent tool or the CLI:
+## From the CLI
 
 ```sh
-bb korey ask "Turn this discussion into a draft Shortcut Story"
-bb korey ask "Review these files" --file spec.md --file screenshot.png
+bb korey ask "Summarize the Sentry errors introduced in our latest release"
+bb korey ask "Review this rollout plan against our LaunchDarkly flags" --file plan.md
+bb korey shortcut create "Create a Story for the bug investigated in this conversation"
 ```
 
-Link an existing private Korey conversation when needed:
+When you ask for a Shortcut Story to be created or updated, the plugin shows the
+request for approval before sending it to Korey. Korey handles the Story through
+its Shortcut connector. You can also link an existing private Korey conversation
+and continue work you started there.
 
-```sh
-bb korey threads "checkout"
-bb korey link <korey-thread-id>
-```
+## Reference
 
-Request a Shortcut write:
+- [CLI, conversations, files, and operation recovery](docs/usage.md)
+- [Development, CI, and the API contract](docs/development.md)
 
-```sh
-bb korey shortcut create "Create the reviewed bug Story" --file screenshot.png
-bb korey shortcut update SC-123 "Add the approved acceptance criterion"
-```
-
-The Shortcut command does not accept `--yes`. It pauses and displays a BB-owned
-approval form containing the exact action, Story ID, Korey organization and
-conversation revision, instruction, attachment sizes, attachment SHA-256
-hashes, and any unresolved earlier Shortcut operations. Nothing write-intended
-is sent to Korey unless that form is approved. BB cannot inspect or bind the
-server-side Shortcut connector configuration used by Korey.
-
-Native tools expose the same capabilities:
-
-- `korey_status`
-- `korey_list_threads`
-- `korey_get_thread`
-- `korey_link_thread`
-- `korey_unlink_thread`
-- `korey_ask`
-- `korey_shortcut_change`
-- `korey_list_operations`
-- `korey_get_operation`
-- `korey_resume_operation`
-- `korey_reconcile_operation`
-
-## Operation Recovery
-
-Every Shortcut request has a durable operation ID and SQLite journal. The
-plugin records the immutable approved request, destination, attachment hashes,
-uploaded attachment IDs, Korey thread ID, and Korey message ID as they become
-available.
-
-Inspect recent operations:
-
-```sh
-bb korey operation list
-bb korey operation show <operation-id>
-```
-
-If Korey accepted the message but response polling failed, resume only the
-read-only poll:
-
-```sh
-bb korey operation resume <operation-id>
-```
-
-If message dispatch had an unknown outcome, reconcile the existing operation
-against the linked Korey history:
-
-```sh
-bb korey operation reconcile <operation-id>
-```
-
-Reconciliation never resends the message. An absent history match does not
-prove that Shortcut made no change, so inspect Korey and Shortcut before asking
-for another approval.
-
-Important operation states:
-
-| State                | Meaning                                                             |
-| -------------------- | ------------------------------------------------------------------- |
-| `awaiting-approval`  | BB is waiting for the user-owned approval form.                     |
-| `awaiting-response`  | Korey recorded the message; response polling can resume safely.     |
-| `korey-complete`     | Korey finished the turn; the Shortcut result still requires review. |
-| `definite-failure`   | No Shortcut-intended message was dispatched.                        |
-| `reconcile-required` | Message dispatch may have succeeded; never resend automatically.    |
-
-## Safety Model
-
-`korey_shortcut_change` uses a server-managed, single-use interaction instead
-of an agent-supplied confirmation boolean. The approved snapshot is checked
-again after conversation serialization, so changing the linked Korey thread
-or its revision invalidates the approval. Concurrent work for one linked
-conversation is serialized, and first-use mappings are claimed transactionally
-before a remote thread is created. The next approval displays unresolved
-operations from either the current BB thread or the destination Korey
-conversation, including operations from another BB thread before relinking.
-Approval is invalidated if that snapshot changes before dispatch.
-
-This protects the normal BB tool and CLI flow; it is not a cryptographic
-authorization boundary against malicious code already running with the user's
-full BB credentials. BB plugins and coding agents are trusted local software.
-
-Korey's public API has no idempotency key or structured Shortcut mutation
-result. The plugin therefore cannot promise exactly-once Shortcut writes. It
-never automatically repeats a message whose dispatch may have started, and a
-Korey `complete` response is not proof that Shortcut committed exactly one
-change. Always review the resulting Story.
-
-`korey_ask` prefixes consultation requests with an instruction not to modify
-connected systems. This is prompt-mediated, not a connector capability
-sandbox. Use a Korey workspace and connector permissions appropriate for the
-data and actions available to Korey. Consultation messages include a unique
-reference so an ambiguous message response can be reconciled against Korey
-history; if no exact match is visible, inspect the conversation rather than
-resending automatically.
-
-## File Attachments
-
-Paths are relative to the BB thread workspace. The host entry opens and checks
-the actual file descriptor, rejects absolute paths, traversal, external
-symlinks, non-files, unsupported extensions, duplicate files supplied through
-path aliases or hard links, and files that grow beyond their limit while being
-read.
-
-Korey's current byte limits are enforced before creating a conversation or
-showing approval:
-
-| Type   | Extensions                               | Per-file limit |
-| ------ | ---------------------------------------- | -------------- |
-| Images | `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp` | 3 MiB          |
-| PDF    | `.pdf`                                   | 2.5 MiB        |
-| Text   | `.txt`, `.md`, `.csv`                    | 0.5 MiB        |
-
-Up to five files can be uploaded per request and 25 files can be stored on one
-Korey thread. Korey also limits PDFs to 100 pages, rejects password-protected
-PDFs, and applies additional image/PDF validation remotely; those checks are
-not available locally before upload.
-
-## API Contract
-
-`korey.openapi.json` is a pinned copy of Korey's public OpenAPI document.
-`generated/korey-api.ts` is committed because managed Git installs disable
-lifecycle scripts and omit development dependencies. Refresh both deliberately:
-
-```sh
-bun run openapi:sync
-bun run generate:openapi
-git diff -- korey.openapi.json generated/korey-api.ts
-```
-
-Mutation POSTs are never retried automatically and never follow redirects.
-Redirects and undocumented response statuses during message dispatch leave the
-operation available for reconciliation. Response polling uses bounded backoff
-for transient network errors, `429`, and `5xx` responses and honors `Retry-After`.
-
-## Development
-
-TypeScript source, tests, test helpers, and the Vitest configuration live in
-`plugin/`.
-
-Use the Bun version pinned in `package.json` and Node.js 24, as specified in
-`.nvmrc`:
-
-```sh
-nvm use
-bun install --frozen-lockfile
-bun run check
-```
-
-CI uses a task matrix on Blacksmith Linux runners with the Node.js version in
-`.nvmrc` and the Bun version in `package.json`. Linting, formatting, SDK dependency
-pins, TypeScript type checking, tests, plugin builds, and generated OpenAPI code
-checks each run as a separate job with the same setup. `bun run check` runs all of
-these checks locally.
-
-`bun run lint` runs Oxlint, and `bun run check:format` checks formatting with
-Oxfmt. Use `bun run format` to apply formatting. Generated files and local tool
-state are excluded from linting and formatting; `bun run check:openapi` regenerates
-the OpenAPI client and checks it for uncommitted changes.
-
-The `validate-production-build` CI job tests production-only installs with
-lifecycle scripts and optional dependencies disabled, then builds all three
-entries using BB 0.40.0 and 0.43.4. This checks that users can build the plugin from
-a managed Git install, without relying on development dependencies or code
-generation during installation. It does not publish or deploy anything.
-
-The development SDK is pinned to 0.5.9 for BB 0.43.4; the runtime contract requires
-SDK 0.4.10 or newer. Runtime imports that BB does not provide belong in
-`dependencies`; SDK types, React, and development tools belong in `devDependencies`.
-
-Local installations of the earlier test package use a different plugin
-identity and storage namespace. Reconfigure the token and relink conversations
-after installing `bb-plugin-korey`; no unpublished test state is migrated.
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+Maintained by Shortcut. MIT licensed; see [LICENSE](LICENSE).
