@@ -23,6 +23,7 @@ bb plugin install https://github.com/useshortcut/bb-plugin-korey
 For local development:
 
 ```sh
+nvm use
 npm ci
 bb plugin install .
 ```
@@ -203,23 +204,30 @@ for transient network errors, `429`, and `5xx` responses and honors `Retry-After
 
 ## Development
 
+Use Node.js 24, as specified in `.nvmrc`:
+
 ```sh
+nvm use
 npm ci
 npm run generate:openapi
 git diff --exit-code -- generated/korey-api.ts
 npm run check
 ```
 
-CI runs these checks on Linux and macOS. `npm run check` verifies formatting,
-the SDK dependency pins, types, tests, and all three plugin builds. Use
-`npm run format` to apply formatting.
+CI runs these checks on Blacksmith Linux runners using the Node.js version in
+`.nvmrc`. CI also regenerates the OpenAPI client and checks for uncommitted changes.
+`npm run check` verifies formatting, SDK dependency pins, types, tests, and builds
+for the server, app, and host entries. Use `npm run format` to apply formatting.
 
 A separate CI job tests production-only installs with lifecycle scripts and
 optional dependencies disabled, then builds all three entries using BB 0.40.0
-and 0.43.4. The development SDK is pinned to 0.5.9 for BB 0.43.4; the runtime
-contract requires SDK 0.4.10 or newer. Runtime imports that BB does not provide
-belong in `dependencies`; SDK types, React, and development tools belong in
-`devDependencies`.
+and 0.43.4. This checks that users can build the plugin from a managed Git install,
+without relying on development dependencies or code generation during installation. It
+does not publish or deploy anything.
+
+The development SDK is pinned to 0.5.9 for BB 0.43.4; the runtime contract requires
+SDK 0.4.10 or newer. Runtime imports that BB does not provide belong in
+`dependencies`; SDK types, React, and development tools belong in `devDependencies`.
 
 Local installations of the earlier test package use a different plugin
 identity and storage namespace. Reconfigure the token and relink conversations
