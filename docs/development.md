@@ -71,3 +71,16 @@ build output is required. The Git install tracks the default branch; use
 `bb plugin outdated` to inspect updates and `bb plugin update korey` to apply
 one. To pin a particular commit, install
 `git:https://github.com/useshortcut/bb-plugin-korey.git@<commit-sha>` instead.
+
+## Branding
+
+`assets/korey-mark.svg` is the compact mark used by Korey's browser extension.
+The full logos use the paths from `KoreyLogo.tsx` in the Korey web app, with the
+light and dark brand colors from `styles/colors.css` and the wordmark colors
+from `KoreyLogo.module.css`. These sources live under `korey-frontend/` in the
+Shortcut monorepo. Keep the plugin assets aligned with that artwork when Korey's
+branding changes.
+
+The manifest uses the compact mark for plugin icons and the full logos for
+larger surfaces. The README selects the light or dark logo to match the reader's
+theme.

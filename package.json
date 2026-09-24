@@ -24,7 +24,11 @@
     "name": "Korey",
     "description": "Ask Korey to work with your connected tools from any BB harness.",
     "branding": {
-      "icon": "Sparkles"
+      "icon": "./assets/korey-mark.svg",
+      "logo": {
+        "light": "./assets/korey-logo-light.svg",
+        "dark": "./assets/korey-logo-dark.svg"
+      }
     },
     "server": "./plugin/server.ts",
     "app": "./plugin/app.tsx",
