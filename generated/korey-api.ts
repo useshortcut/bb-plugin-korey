@@ -12,50 +12,43 @@ export const get__threads_ThreadId_messages = {
   responseFormat: z.literal("json"),
   parameters: {
     query: z
-      .object({ limit: z.coerce.number().int().min(1), after: z.string() })
+      .strictObject({ limit: z.coerce.number().int().min(1), after: z.string() })
       .partial()
-      .strict()
       .optional(),
-    path: z.object({ "thread-id": z.uuid() }).strict(),
+    path: z.strictObject({ "thread-id": z.uuid() }),
   },
   responses: {
-    200: z
-      .object({
-        data: z.array(
-          z
-            .object({
-              id: z.string(),
-              thread_id: z.string(),
-              role: z.enum(["user", "assistant", "summary"]),
-              contents: z.array(
-                z.union([
-                  z.object({ type: z.literal("text"), text: z.string() }).strict(),
-                  z.object({ type: z.literal("image"), attachment_id: z.string() }).strict(),
-                  z.object({ type: z.literal("document"), attachment_id: z.string() }).strict(),
-                  z
-                    .object({
-                      type: z.literal("user_get_choice"),
-                      tool_use_id: z.string(),
-                      question: z.string(),
-                      choices: z.array(z.string()),
-                    })
-                    .strict(),
-                ]),
-              ),
-              created_at: z.string(),
-              app_url: z.string(),
-            })
-            .strict(),
-        ),
-        first_id: z.string().nullable(),
-        last_id: z.string().nullable(),
-        has_more: z.boolean(),
-        limit: z.number().int().min(1),
-      })
-      .strict(),
+    200: z.strictObject({
+      data: z.array(
+        z.strictObject({
+          id: z.string(),
+          thread_id: z.string(),
+          role: z.enum(["user", "assistant", "summary"]),
+          contents: z.array(
+            z.union([
+              z.strictObject({ type: z.literal("text"), text: z.string() }),
+              z.strictObject({ type: z.literal("image"), attachment_id: z.string() }),
+              z.strictObject({ type: z.literal("document"), attachment_id: z.string() }),
+              z.strictObject({
+                type: z.literal("user_get_choice"),
+                tool_use_id: z.string(),
+                question: z.string(),
+                choices: z.array(z.string()),
+              }),
+            ]),
+          ),
+          created_at: z.string(),
+          app_url: z.string(),
+        }),
+      ),
+      first_id: z.string().nullable(),
+      last_id: z.string().nullable(),
+      has_more: z.boolean(),
+      limit: z.number().int().min(1),
+    }),
     401: z.unknown(),
     403: z.unknown(),
-    404: z.object({ error: z.string(), message: z.string() }).strict(),
+    404: z.strictObject({ error: z.string(), message: z.string() }),
   },
 };
 
@@ -66,15 +59,15 @@ export const post__threads_ThreadId_messages = {
   requestFormat: z.literal("json"),
   responseFormat: z.literal("json"),
   parameters: {
-    path: z.object({ "thread-id": z.uuid() }).strict(),
-    body: z.object({ text: z.string().min(1), attachment_ids: z.array(z.uuid()).max(25).optional() }).strict(),
+    path: z.strictObject({ "thread-id": z.uuid() }),
+    body: z.strictObject({ text: z.string().min(1), attachment_ids: z.array(z.uuid()).max(25).optional() }),
   },
   responses: {
-    201: z.object({ message_id: z.string() }).strict(),
+    201: z.strictObject({ message_id: z.string() }),
     401: z.unknown(),
-    403: z.object({ error: z.string(), message: z.string() }).strict(),
-    404: z.object({ error: z.string(), message: z.string() }).strict(),
-    409: z.object({ error: z.string(), message: z.string() }).strict(),
+    403: z.strictObject({ error: z.string(), message: z.string() }),
+    404: z.strictObject({ error: z.string(), message: z.string() }),
+    409: z.strictObject({ error: z.string(), message: z.string() }),
   },
 };
 
@@ -86,8 +79,8 @@ export const post__threads_ThreadId_messages_MessageId_feedback = {
   requestFormat: z.literal("json"),
   responseFormat: z.literal("json"),
   parameters: {
-    path: z.object({ "thread-id": z.uuid(), "message-id": z.uuid() }).strict(),
-    body: z.object({ positive: z.boolean(), feedback_text: z.string().max(1024).optional() }).strict(),
+    path: z.strictObject({ "thread-id": z.uuid(), "message-id": z.uuid() }),
+    body: z.strictObject({ positive: z.boolean(), feedback_text: z.string().max(1024).optional() }),
   },
   responses: { 204: z.null(), 401: z.unknown(), 403: z.unknown() },
 };
@@ -99,7 +92,7 @@ export const get__threads_ThreadId_messages_MessageId_response_stream = {
   path: z.literal("/threads/{thread-id}/messages/{message-id}/response/stream"),
   requestFormat: z.literal("json"),
   responseFormat: z.literal("json"),
-  parameters: { path: z.object({ "thread-id": z.uuid(), "message-id": z.uuid() }).strict() },
+  parameters: { path: z.strictObject({ "thread-id": z.uuid(), "message-id": z.uuid() }) },
   responses: { 401: z.unknown(), 403: z.unknown() },
 };
 
@@ -111,7 +104,7 @@ export const get__threads = {
   responseFormat: z.literal("json"),
   parameters: {
     query: z
-      .object({
+      .strictObject({
         owned: z
           .union([z.boolean(), z.string(), z.number()])
           .transform((x) => x === true || x === "true" || x === 1 || x === "1"),
@@ -129,33 +122,28 @@ export const get__threads = {
         after: z.string(),
       })
       .partial()
-      .strict()
       .optional(),
   },
   responses: {
-    200: z
-      .object({
-        data: z.array(
-          z
-            .object({
-              id: z.string(),
-              name: z.string().nullable(),
-              state: z.enum(["ready", "waiting", "active", "error", "interrupted"]),
-              is_private: z.boolean(),
-              archived: z.boolean(),
-              owner: z.object({ id: z.string(), name: z.string().nullable() }).strict(),
-              created_at: z.string(),
-              updated_at: z.string(),
-              app_url: z.string(),
-            })
-            .strict(),
-        ),
-        first_id: z.string().nullable(),
-        last_id: z.string().nullable(),
-        has_more: z.boolean(),
-        limit: z.number().int().min(1),
-      })
-      .strict(),
+    200: z.strictObject({
+      data: z.array(
+        z.strictObject({
+          id: z.string(),
+          name: z.string().nullable(),
+          state: z.enum(["ready", "waiting", "active", "error", "interrupted"]),
+          is_private: z.boolean(),
+          archived: z.boolean(),
+          owner: z.strictObject({ id: z.string(), name: z.string().nullable() }),
+          created_at: z.string(),
+          updated_at: z.string(),
+          app_url: z.string(),
+        }),
+      ),
+      first_id: z.string().nullable(),
+      last_id: z.string().nullable(),
+      has_more: z.boolean(),
+      limit: z.number().int().min(1),
+    }),
     401: z.unknown(),
     403: z.unknown(),
   },
@@ -169,16 +157,15 @@ export const post__threads = {
   responseFormat: z.literal("json"),
   parameters: {
     body: z
-      .object({ text: z.string().min(1), name: z.string().nullable(), is_private: z.boolean() })
+      .strictObject({ text: z.string().min(1), name: z.string().nullable(), is_private: z.boolean() })
       .partial()
-      .strict()
       .optional(),
   },
   responses: {
-    201: z.object({ thread_id: z.string(), message_id: z.string().nullable() }).strict(),
+    201: z.strictObject({ thread_id: z.string(), message_id: z.string().nullable() }),
     401: z.unknown(),
     403: z.unknown(),
-    409: z.object({ error: z.string(), message: z.string() }).strict(),
+    409: z.strictObject({ error: z.string(), message: z.string() }),
   },
 };
 
@@ -189,17 +176,17 @@ export const post__threads_ThreadId_attachments = {
   requestFormat: z.literal("form-data"),
   responseFormat: z.literal("json"),
   parameters: {
-    path: z.object({ "thread-id": z.uuid() }).strict(),
+    path: z.strictObject({ "thread-id": z.uuid() }),
     body: z
       .object({ "attachments[0]": z.custom<Blob>((v) => typeof Blob !== "undefined" && v instanceof Blob) })
       .catchall(z.custom<Blob>((v) => typeof Blob !== "undefined" && v instanceof Blob)),
   },
   responses: {
-    201: z.array(z.object({ id: z.uuid(), filename: z.string() }).strict()),
+    201: z.array(z.strictObject({ id: z.uuid(), filename: z.string() })),
     400: z.object({ message: z.string() }).catchall(z.unknown()),
     401: z.unknown(),
-    403: z.object({ error: z.string(), message: z.string() }).strict(),
-    404: z.object({ error: z.string(), message: z.string() }).strict(),
+    403: z.strictObject({ error: z.string(), message: z.string() }),
+    404: z.strictObject({ error: z.string(), message: z.string() }),
     422: z
       .object({ message: z.string(), reason: z.object({}).partial().catchall(z.unknown()).optional() })
       .catchall(z.unknown()),
@@ -212,24 +199,22 @@ export const get__threads_ThreadId = {
   path: z.literal("/threads/{thread-id}"),
   requestFormat: z.literal("json"),
   responseFormat: z.literal("json"),
-  parameters: { path: z.object({ "thread-id": z.uuid() }).strict() },
+  parameters: { path: z.strictObject({ "thread-id": z.uuid() }) },
   responses: {
-    200: z
-      .object({
-        id: z.string(),
-        name: z.string().nullable(),
-        state: z.enum(["ready", "waiting", "active", "error", "interrupted"]),
-        is_private: z.boolean(),
-        archived: z.boolean(),
-        owner: z.object({ id: z.string(), name: z.string().nullable() }).strict(),
-        created_at: z.string(),
-        updated_at: z.string(),
-        app_url: z.string(),
-      })
-      .strict(),
+    200: z.strictObject({
+      id: z.string(),
+      name: z.string().nullable(),
+      state: z.enum(["ready", "waiting", "active", "error", "interrupted"]),
+      is_private: z.boolean(),
+      archived: z.boolean(),
+      owner: z.strictObject({ id: z.string(), name: z.string().nullable() }),
+      created_at: z.string(),
+      updated_at: z.string(),
+      app_url: z.string(),
+    }),
     401: z.unknown(),
     403: z.unknown(),
-    404: z.object({ error: z.string(), message: z.string() }).strict(),
+    404: z.strictObject({ error: z.string(), message: z.string() }),
   },
 };
 
@@ -241,17 +226,15 @@ export const get__me = {
   responseFormat: z.literal("json"),
   parameters: z.never(),
   responses: {
-    200: z
-      .object({
-        sub: z.string(),
-        name: z.string().nullable(),
-        email: z.string().nullable(),
-        korey_user_id: z.number().int(),
-        korey_organization_id: z.number().int(),
-        korey_organization_slug: z.string(),
-        role: z.string(),
-      })
-      .strict(),
+    200: z.strictObject({
+      sub: z.string(),
+      name: z.string().nullable(),
+      email: z.string().nullable(),
+      korey_user_id: z.number().int(),
+      korey_organization_id: z.number().int(),
+      korey_organization_slug: z.string(),
+      role: z.string(),
+    }),
     401: z.unknown(),
     403: z.unknown(),
   },
@@ -264,43 +247,37 @@ export const get__threads_ThreadId_messages_MessageId_response = {
   path: z.literal("/threads/{thread-id}/messages/{message-id}/response"),
   requestFormat: z.literal("json"),
   responseFormat: z.literal("json"),
-  parameters: { path: z.object({ "thread-id": z.uuid(), "message-id": z.uuid() }).strict() },
+  parameters: { path: z.strictObject({ "thread-id": z.uuid(), "message-id": z.uuid() }) },
   responses: {
-    200: z
-      .object({
-        status: z.literal("complete"),
-        messages: z.array(
-          z
-            .object({
-              id: z.string(),
-              thread_id: z.string(),
-              role: z.enum(["user", "assistant", "summary"]),
-              contents: z.array(
-                z.union([
-                  z.object({ type: z.literal("text"), text: z.string() }).strict(),
-                  z.object({ type: z.literal("image"), attachment_id: z.string() }).strict(),
-                  z.object({ type: z.literal("document"), attachment_id: z.string() }).strict(),
-                  z
-                    .object({
-                      type: z.literal("user_get_choice"),
-                      tool_use_id: z.string(),
-                      question: z.string(),
-                      choices: z.array(z.string()),
-                    })
-                    .strict(),
-                ]),
-              ),
-              created_at: z.string(),
-              app_url: z.string(),
-            })
-            .strict(),
-        ),
-      })
-      .strict(),
-    202: z.object({ status: z.literal("processing") }).strict(),
+    200: z.strictObject({
+      status: z.literal("complete"),
+      messages: z.array(
+        z.strictObject({
+          id: z.string(),
+          thread_id: z.string(),
+          role: z.enum(["user", "assistant", "summary"]),
+          contents: z.array(
+            z.union([
+              z.strictObject({ type: z.literal("text"), text: z.string() }),
+              z.strictObject({ type: z.literal("image"), attachment_id: z.string() }),
+              z.strictObject({ type: z.literal("document"), attachment_id: z.string() }),
+              z.strictObject({
+                type: z.literal("user_get_choice"),
+                tool_use_id: z.string(),
+                question: z.string(),
+                choices: z.array(z.string()),
+              }),
+            ]),
+          ),
+          created_at: z.string(),
+          app_url: z.string(),
+        }),
+      ),
+    }),
+    202: z.strictObject({ status: z.literal("processing") }),
     401: z.unknown(),
     403: z.unknown(),
-    404: z.object({ error: z.string(), message: z.string() }).strict(),
+    404: z.strictObject({ error: z.string(), message: z.string() }),
   },
 };
 

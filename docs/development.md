@@ -60,8 +60,8 @@ The development dependencies support these tasks:
   backend and frontend tests.
 - `better-sqlite3`, `cron-parser`, and `hono` are peers used by the SDK's backend
   test harness. SQLite is also imported directly by the storage tests.
-- `node-gyp` provides the native build fallback for dependencies such as
-  `better-sqlite3` when installation cannot use a prebuilt binary.
+- `node-gyp` supports the native build step Bun invokes during clean SQLite
+  installs, including development and CI installations.
 - `oxlint`, `oxfmt`, and `typed-openapi` run the lint, formatting, and OpenAPI
   generation scripts.
 
@@ -72,6 +72,12 @@ their development dependency pins for app plugins and supplies their runtime
 implementations. Removing these entries makes `bun run check:sdk` fail even when
 the plugin does not use those components. Revisit them if BB makes this check
 depend on the plugin's actual imports.
+
+Keep BB-managed version ranges when updating dependencies; the lockfile can
+still select newer compatible releases within those ranges. `@types/node`
+tracks Node.js 24, and `@types/better-sqlite3` stays on 7.x to satisfy the SDK's
+peer dependency. Newer SDK and Sonner versions must wait for a compatible BB
+release.
 
 ## API contract
 
@@ -84,6 +90,10 @@ bun run openapi:sync
 bun run generate:openapi
 git diff -- korey.openapi.json generated/korey-api.ts
 ```
+
+Generation explicitly preserves OpenAPI's default of allowing additional
+properties when a schema omits `additionalProperties`. Schemas that set it to
+`false` remain strict.
 
 Mutation POSTs are never retried automatically and never follow redirects.
 Redirects and undocumented response statuses during message dispatch leave the
