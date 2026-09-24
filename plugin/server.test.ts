@@ -427,9 +427,13 @@ describe("Korey Shortcut approval and recovery", () => {
     },
   );
 
-  it.each(["unchanged", "before-approval", "during-preparation"])(
+  it.each([
+    ["unchanged", "thread-a", "reconcile-required"],
+    ["before-approval", "thread-b", "cancelled"],
+    ["during-preparation", "thread-b", "definite-failure"],
+  ])(
     "includes and binds unresolved writes after relinking from A to B (%s)",
-    async (predecessorChange) => {
+    async (predecessorChange, operationThreadId, expectedStatus) => {
       const responses: StubbedFetchResult[] = [
         identityResponse(),
         jsonResponse(koreyThread()),
@@ -507,27 +511,21 @@ describe("Korey Shortcut approval and recovery", () => {
           createdAt: expect.any(Number),
         },
       ]);
-      if (predecessorChange !== "unchanged") {
-        expect(result).toMatchObject({ isError: true });
-        expect(JSON.stringify(result)).toContain(
-          "unresolved operation state changed",
-        );
-        expect(
-          listOperations(host.bb.storage.database(), "thread-b", 10)[0],
-        ).toMatchObject({
-          status:
-            predecessorChange === "before-approval"
-              ? "cancelled"
-              : "definite-failure",
-        });
-      } else {
-        expect(JSON.parse(String(result))).toMatchObject({
-          status: "korey-complete",
-        });
-        expect(
-          listOperations(host.bb.storage.database(), "thread-a", 10)[0],
-        ).toMatchObject({ status: "reconcile-required" });
-      }
+      expect(
+        typeof result === "string" ? JSON.parse(result) : result,
+      ).toMatchObject(
+        predecessorChange === "unchanged"
+          ? { status: "korey-complete" }
+          : { isError: true },
+      );
+      expect(JSON.stringify(result)).toContain(
+        predecessorChange === "unchanged"
+          ? "korey-complete"
+          : "unresolved operation state changed",
+      );
+      expect(
+        listOperations(host.bb.storage.database(), operationThreadId, 10)[0],
+      ).toMatchObject({ status: expectedStatus });
       expect(calls.filter((call) => call.init?.method === "POST")).toHaveLength(
         predecessorChange === "unchanged" ? 2 : 1,
       );

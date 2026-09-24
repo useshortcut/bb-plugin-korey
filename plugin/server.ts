@@ -33,7 +33,6 @@ import {
   updateOperationError,
   type MappingRecord,
   type OperationRecord,
-  type OperationStatus,
 } from "./data.js";
 import {
   formatKoreyMessages,

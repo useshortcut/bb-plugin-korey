@@ -212,21 +212,24 @@ Use Node.js 24, as specified in `.nvmrc`:
 ```sh
 nvm use
 npm ci
-npm run generate:openapi
-git diff --exit-code -- generated/korey-api.ts
 npm run check
 ```
 
-CI runs these checks on Blacksmith Linux runners using the Node.js version in
-`.nvmrc`. CI also regenerates the OpenAPI client and checks for uncommitted changes.
-`npm run check` verifies formatting, SDK dependency pins, types, tests, and builds
-for the server, app, and host entries. Use `npm run format` to apply formatting.
+CI uses a task matrix on Blacksmith Linux runners with the Node.js version in
+`.nvmrc`. Linting, formatting, SDK dependency pins, TypeScript type checking, tests,
+plugin builds, and generated OpenAPI code checks each run as a separate job with
+the same setup. `npm run check` runs all of these checks locally.
 
-A separate CI job tests production-only installs with lifecycle scripts and
-optional dependencies disabled, then builds all three entries using BB 0.40.0
-and 0.43.4. This checks that users can build the plugin from a managed Git install,
-without relying on development dependencies or code generation during installation. It
-does not publish or deploy anything.
+`npm run lint` runs Oxlint, and `npm run check:format` checks formatting with
+Oxfmt. Use `npm run format` to apply formatting. Generated files and local tool
+state are excluded from linting and formatting; `npm run check:openapi` regenerates
+the OpenAPI client and checks it for uncommitted changes.
+
+The `validate-production-build` CI job tests production-only installs with
+lifecycle scripts and optional dependencies disabled, then builds all three
+entries using BB 0.40.0 and 0.43.4. This checks that users can build the plugin from
+a managed Git install, without relying on development dependencies or code
+generation during installation. It does not publish or deploy anything.
 
 The development SDK is pinned to 0.5.9 for BB 0.43.4; the runtime contract requires
 SDK 0.4.10 or newer. Runtime imports that BB does not provide belong in

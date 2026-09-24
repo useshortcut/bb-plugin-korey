@@ -53,7 +53,9 @@ it("enables approval controls for the next interaction after submission", async 
   if (registration === undefined) {
     throw new Error("Missing Shortcut approval registration");
   }
-  const submit = vi.fn(async () => undefined);
+  const submit = vi.fn<PluginPendingInteractionProps["submit"]>(
+    async () => undefined,
+  );
   const first = props(
     "interaction-one",
     "korey-11111111-1111-4111-8111-111111111111",
