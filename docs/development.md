@@ -41,6 +41,34 @@ Local installations of the earlier test package use a different plugin
 identity and storage namespace. Reconfigure the token and relink conversations
 after installing `bb-plugin-korey`; no unpublished test state is migrated.
 
+## Dependencies
+
+`zod` is the only production dependency. The plugin uses it for API response
+validation and its own contracts. BB supplies the SDK and React at runtime.
+
+The development dependencies support these tasks:
+
+- `@get-bb/plugin-sdk` and `bb-app` provide SDK declarations, test harnesses,
+  compatibility checks, and plugin builds.
+- `typescript` and the `@types/*` packages type-check the plugin, tests, and SDK
+  declarations with `skipLibCheck: false`.
+- `vitest`, `@testing-library/react`, `jsdom`, `react`, and `react-dom` run the
+  backend and frontend tests.
+- `better-sqlite3`, `cron-parser`, and `hono` are peers used by the SDK's backend
+  test harness. SQLite is also imported directly by the storage tests.
+- `node-gyp` provides the native build fallback for dependencies such as
+  `better-sqlite3` when installation cannot use a prebuilt binary.
+- `oxlint`, `oxfmt`, and `typed-openapi` run the lint, formatting, and OpenAPI
+  generation scripts.
+
+The remaining 16 UI packages are required by BB 0.43.4's SDK compatibility check:
+`@pierre/diffs`, the `@radix-ui/*` entries, `class-variance-authority`, `clsx`,
+`sonner`, `tailwind-merge`, and `vaul`. Our code does not import them. BB scaffolds
+their development dependency pins for app plugins and supplies their runtime
+implementations. Removing these entries makes `bun run check:sdk` fail even when
+the plugin does not use those components. Revisit them if BB makes this check
+depend on the plugin's actual imports.
+
 ## API contract
 
 `korey.openapi.json` is a pinned copy of Korey's public OpenAPI document.
