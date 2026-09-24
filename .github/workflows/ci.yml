@@ -28,9 +28,11 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
-          cache: npm
-      - run: npm ci
-      - run: npm run ${{ matrix.task }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+      - run: bun run ${{ matrix.task }}
 
   validate-production-build:
     strategy:
@@ -43,8 +45,12 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
-          cache: npm
-      - run: npm ci --omit=dev --omit=optional --ignore-scripts
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile --production --omit=optional --ignore-scripts
         env:
           NODE_ENV: production
-      - run: npx --yes --package=bb-app@${{ matrix.bb }} bb plugin build .
+      - name: Install BB build CLI
+        run: bun add --global --ignore-scripts bb-app@${{ matrix.bb }}
+      - run: bb plugin build .

@@ -6,6 +6,7 @@
   "license": "MIT",
   "author": "Shortcut",
   "type": "module",
+  "packageManager": "bun@1.4.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/useshortcut/bb-plugin-korey.git"
@@ -40,9 +41,9 @@
   ],
   "scripts": {
     "build": "bb plugin build .",
-    "check": "npm run lint && npm run check:format && npm run check:sdk && npm run typecheck && npm test && npm run build && npm run check:openapi",
+    "check": "bun run lint && bun run check:format && bun run check:sdk && bun run typecheck && bun run test && bun run build && bun run check:openapi",
     "check:format": "oxfmt --check .",
-    "check:openapi": "npm run generate:openapi && git diff --exit-code -- generated/korey-api.ts",
+    "check:openapi": "bun run generate:openapi && git diff --exit-code -- generated/korey-api.ts",
     "check:sdk": "bb plugin types --check",
     "format": "oxfmt --write .",
     "generate:openapi": "typed-openapi korey.openapi.json --output generated/korey-api.ts --runtime zod --validate-side output --no-runtime-types --no-include-client --format",
@@ -79,6 +80,7 @@
     "cron-parser": "^5.5.0",
     "hono": "^4.11.9",
     "jsdom": "^29.0.1",
+    "node-gyp": "13.0.2",
     "oxfmt": "0.70.0",
     "oxlint": "1.85.0",
     "react": "^19.0.0",

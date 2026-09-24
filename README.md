@@ -24,7 +24,7 @@ For local development:
 
 ```sh
 nvm use
-npm ci
+bun install --frozen-lockfile
 bb plugin install .
 ```
 
@@ -192,8 +192,8 @@ not available locally before upload.
 lifecycle scripts and omit development dependencies. Refresh both deliberately:
 
 ```sh
-npm run openapi:sync
-npm run generate:openapi
+bun run openapi:sync
+bun run generate:openapi
 git diff -- korey.openapi.json generated/korey-api.ts
 ```
 
@@ -207,22 +207,24 @@ for transient network errors, `429`, and `5xx` responses and honors `Retry-After
 TypeScript source, tests, test helpers, and the Vitest configuration live in
 `plugin/`.
 
-Use Node.js 24, as specified in `.nvmrc`:
+Use the Bun version pinned in `package.json` and Node.js 24, as specified in
+`.nvmrc`:
 
 ```sh
 nvm use
-npm ci
-npm run check
+bun install --frozen-lockfile
+bun run check
 ```
 
 CI uses a task matrix on Blacksmith Linux runners with the Node.js version in
-`.nvmrc`. Linting, formatting, SDK dependency pins, TypeScript type checking, tests,
-plugin builds, and generated OpenAPI code checks each run as a separate job with
-the same setup. `npm run check` runs all of these checks locally.
+`.nvmrc` and the Bun version in `package.json`. Linting, formatting, SDK dependency
+pins, TypeScript type checking, tests, plugin builds, and generated OpenAPI code
+checks each run as a separate job with the same setup. `bun run check` runs all of
+these checks locally.
 
-`npm run lint` runs Oxlint, and `npm run check:format` checks formatting with
-Oxfmt. Use `npm run format` to apply formatting. Generated files and local tool
-state are excluded from linting and formatting; `npm run check:openapi` regenerates
+`bun run lint` runs Oxlint, and `bun run check:format` checks formatting with
+Oxfmt. Use `bun run format` to apply formatting. Generated files and local tool
+state are excluded from linting and formatting; `bun run check:openapi` regenerates
 the OpenAPI client and checks it for uncommitted changes.
 
 The `validate-production-build` CI job tests production-only installs with

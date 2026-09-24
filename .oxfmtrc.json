@@ -8,6 +8,7 @@
     ".turbo/",
     "coverage/",
     ".serena/",
+    "bun.lock",
     "korey.openapi.json",
     "generated/"
   ]
