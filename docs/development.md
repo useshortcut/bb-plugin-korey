@@ -16,6 +16,10 @@ bun run check
 bb plugin install .
 ```
 
+`bunfig.toml` requires newly resolved package versions to be at least one day
+old. This applies to direct and transitive dependencies; existing lockfile
+entries remain unchanged during frozen installs.
+
 CI uses a task matrix on Blacksmith Linux runners with the Node.js version in
 `.nvmrc` and the Bun version in `package.json`. Linting, formatting, SDK dependency
 pins, TypeScript type checking, tests, plugin builds, and generated OpenAPI code
