@@ -83,6 +83,21 @@ Reconciliation never resends the message. An absent history match does not
 prove that Shortcut made no change, so inspect Korey and Shortcut before asking
 for another approval.
 
+After inspecting Korey and Shortcut, close an unresolved operation with a note:
+
+```sh
+bb korey operation resolve <operation-id> "Verified SC-123 contains the requested change"
+```
+
+BB displays the operation and note for your confirmation. Resolution removes
+the warning from later approvals and preserves the original request, error,
+note, and completion time in the local journal. It does not cancel remote work
+or assert that Korey completed it. A changed operation invalidates the pending
+confirmation. Approval and resolution forms expire after ten minutes.
+
+`manually-resolved` records this user-confirmed closeout, distinct from a
+`korey-complete` response.
+
 Important operation states:
 
 | State                | Meaning                                                             |

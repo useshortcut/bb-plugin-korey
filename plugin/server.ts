@@ -8,6 +8,9 @@ import {
   type AttachmentFile,
 } from "./attachments.js";
 import {
+  OPERATION_RESOLUTION_RENDERER_ID,
+  operationResolutionPayloadSchema,
+  operationResolutionResponseSchema,
   SHORTCUT_APPROVAL_RENDERER_ID,
   shortcutApprovalPayloadSchema,
   shortcutApprovalResponseSchema,
@@ -50,6 +53,7 @@ const CONSULT_PREFIX = [
 ].join("\n");
 const MAPPING_MARKER_PREFIX = "bb-korey";
 const MAX_STORED_RESPONSE_BYTES = 64 * 1024;
+const INTERACTION_TIMEOUT_MS = 10 * 60_000;
 
 const CLI_COMMANDS = [
   {
@@ -101,6 +105,7 @@ const CLI_COMMANDS = [
       "bb korey operation show <operation-id> [--bb-thread <id>] [--json]",
       "bb korey operation resume <operation-id> [--bb-thread <id>] [--json]",
       "bb korey operation reconcile <operation-id> [--bb-thread <id>] [--json]",
+      "bb korey operation resolve <operation-id> <note...> [--bb-thread <id>] [--json]",
     ].join("\n  "),
   },
 ];
@@ -228,6 +233,7 @@ function operationView(operation: OperationRecord) {
     attachmentIds: operation.attachmentIds,
     response: operation.responseText,
     responseTruncated: operation.responseTruncated,
+    resolutionNote: operation.resolutionNote,
     error: operation.error,
     createdAt: new Date(operation.createdAt).toISOString(),
     updatedAt: new Date(operation.updatedAt).toISOString(),
@@ -1257,6 +1263,7 @@ export default async function plugin(bb: BbPluginApi) {
         {
           threadId: bbThreadId,
           rendererId: SHORTCUT_APPROVAL_RENDERER_ID,
+          timeoutMs: INTERACTION_TIMEOUT_MS,
           title: `${input.action === "create" ? "Create" : "Update"} Shortcut Story`,
           payload: request,
         },
@@ -1412,6 +1419,75 @@ export default async function plugin(bb: BbPluginApi) {
       });
       operation = await finishOperationPolling(api, operation, signal);
       return { reconciled: true, operation };
+    });
+  }
+
+  async function resolveOperation(
+    bbThreadId: string,
+    operationId: string,
+    note: string,
+    signal?: AbortSignal,
+  ): Promise<OperationRecord> {
+    const operation = operationForThread(bbThreadId, operationId);
+    if (
+      operation.status !== "awaiting-response" &&
+      operation.status !== "reconcile-required"
+    ) {
+      throw new Error(
+        `Korey operation ${operation.id} is ${operation.status}; only unresolved operations can be manually resolved.`,
+      );
+    }
+    const resolutionHash = (current: OperationRecord) =>
+      hash(JSON.stringify({ operation: current, note: note.trim() }));
+    const payload = operationResolutionPayloadSchema.parse({
+      operationId: operation.id,
+      resolutionHash: resolutionHash(operation),
+      status: operation.status,
+      instruction: storedRequestSummarySchema.parse(operation.request)
+        .instruction,
+      koreyThreadId: operation.koreyThreadId,
+      note,
+    });
+    const interaction = await bb.ui.requestInput(
+      {
+        threadId: bbThreadId,
+        rendererId: OPERATION_RESOLUTION_RENDERER_ID,
+        title: "Resolve Korey operation manually",
+        payload,
+        timeoutMs: INTERACTION_TIMEOUT_MS,
+      },
+      { signal },
+    );
+    if (interaction.outcome === "cancelled") {
+      throw new Error(
+        `Operation resolution cancelled (${interaction.reason}); the operation remains unresolved.`,
+      );
+    }
+    const response = operationResolutionResponseSchema.safeParse(
+      interaction.value,
+    );
+    if (
+      !response.success ||
+      response.data.operationId !== payload.operationId ||
+      response.data.resolutionHash !== payload.resolutionHash
+    ) {
+      throw new Error(
+        "Operation resolution was not confirmed for this operation and note.",
+      );
+    }
+    return withThreadLock(bbThreadId, async () => {
+      const current = operationForThread(bbThreadId, operationId);
+      if (resolutionHash(current) !== payload.resolutionHash) {
+        throw new Error(
+          "The operation changed while resolution was pending. Inspect it again before resolving.",
+        );
+      }
+      return transitionOperation(db, {
+        id: operationId,
+        from: operation.status,
+        to: "manually-resolved",
+        patch: { resolutionNote: payload.note, completedAt: Date.now() },
+      });
     });
   }
 
@@ -1599,6 +1675,28 @@ export default async function plugin(bb: BbPluginApi) {
           }
           const [action, operationId, ...extra] = parsed.positional;
           const bbThreadId = cliThreadId(parsed.bbThreadId, context.threadId);
+          if (action === "resolve") {
+            if (
+              operationId === undefined ||
+              extra.length === 0 ||
+              parsed.limit !== undefined
+            ) {
+              throw new Error(
+                "operation resolve requires an operation ID and a resolution note",
+              );
+            }
+            const operation = await resolveOperation(
+              bbThreadId,
+              operationId,
+              extra.join(" "),
+              context.signal,
+            );
+            return cliOutput(
+              parsed.json,
+              operationView(operation),
+              `Operation ${operation.id} was manually resolved. ${operation.resolutionNote}`,
+            );
+          }
           if (action === "list") {
             if (operationId !== undefined || extra.length > 0) {
               throw new Error("operation list accepts no operation ID");
@@ -1630,7 +1728,7 @@ export default async function plugin(bb: BbPluginApi) {
             parsed.limit !== undefined
           ) {
             throw new Error(
-              "operation requires list, show <id>, resume <id>, or reconcile <id>",
+              "operation requires list, show <id>, resume <id>, reconcile <id>, or resolve <id> <note>",
             );
           }
           if (action === "show") {

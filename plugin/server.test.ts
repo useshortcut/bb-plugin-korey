@@ -5,9 +5,14 @@ import {
   type FakePluginHost,
 } from "@get-bb/plugin-sdk/testing";
 import type { ReadAttachmentResult } from "./attachments.js";
-import { shortcutApprovalPayloadSchema } from "./contracts.js";
+import {
+  operationResolutionPayloadSchema,
+  shortcutApprovalPayloadSchema,
+} from "./contracts.js";
 import {
   getMapping,
+  getOperation,
+  listUnresolvedOperations,
   listOperations,
   setLinkedMapping,
   transitionOperation,
@@ -329,6 +334,100 @@ describe("Korey plugin conversations", () => {
 });
 
 describe("Korey Shortcut approval and recovery", () => {
+  it.each(["confirm", "cancel", "tamper", "changed"] as const)(
+    "requires a bound human confirmation for manual resolution (%s)",
+    async (outcome) => {
+      const calls = stubFetch([
+        identityResponse(),
+        jsonResponse(koreyThread()),
+        jsonResponse(koreyThread()),
+        new Error("connection reset"),
+        messagePage(),
+      ]);
+      const host = await loadPlugin();
+      storeMapping(host);
+      const pending = host.harness.callAgentTool("korey_shortcut_change", {
+        action: "create",
+        instruction: "Create one Story.",
+      });
+      const approval = await waitForApproval(host);
+      approve(host, approval);
+      await pending;
+      const db = host.bb.storage.database();
+      const before = getOperation(db, approval.payload.operationId)!;
+      expect(before.status).toBe("reconcile-required");
+      const resolving = host.harness.runCli([
+        "operation",
+        "resolve",
+        before.id,
+        "Inspected Korey and Shortcut; SC-123 contains the requested change.",
+        "--bb-thread",
+        "thread-test",
+        "--json",
+      ]);
+      const interaction = await vi.waitFor(() => {
+        const current = host.harness.pendingInteractions[0];
+        expect(current).toBeDefined();
+        return current!;
+      });
+      const payload = operationResolutionPayloadSchema.parse(
+        interaction.payload,
+      );
+      expect(getOperation(db, before.id)).toEqual(before);
+      if (outcome === "cancel") {
+        host.harness.cancelInteraction(interaction.id);
+      } else {
+        if (outcome === "changed")
+          transitionOperation(db, {
+            id: before.id,
+            from: "reconcile-required",
+            to: "awaiting-response",
+            patch: { koreyMessageId: "found" },
+          });
+        host.harness.submitInteraction(interaction.id, {
+          confirmed: true,
+          operationId: before.id,
+          resolutionHash:
+            outcome === "tamper" ? "0".repeat(64) : payload.resolutionHash,
+        });
+      }
+      const result = await resolving;
+      expect(result.exitCode).toBe(outcome === "confirm" ? 0 : 1);
+      const timestamp = expect.any(Number);
+      expect(getOperation(db, before.id)).toMatchObject({
+        status:
+          outcome === "confirm"
+            ? "manually-resolved"
+            : outcome === "changed"
+              ? "awaiting-response"
+              : "reconcile-required",
+        resolutionNote: outcome === "confirm" ? payload.note : null,
+        completedAt: outcome === "confirm" ? timestamp : null,
+        error: before.error,
+        request: before.request,
+        requestHash: before.requestHash,
+      });
+      expect(
+        listUnresolvedOperations(db, "thread-test", "korey-thread-1"),
+      ).toHaveLength(outcome === "confirm" ? 0 : 1);
+      let replayExitCode: number | undefined;
+      if (outcome === "confirm") {
+        const replay = await host.harness.runCli([
+          "operation",
+          "resolve",
+          before.id,
+          "Resolve again",
+          "--bb-thread",
+          "thread-test",
+        ]);
+        replayExitCode = replay.exitCode;
+      }
+      expect(replayExitCode).toBe(outcome === "confirm" ? 1 : undefined);
+      expect(host.harness.pendingInteractions).toHaveLength(0);
+      expect(calls).toHaveLength(5);
+    },
+  );
+
   it.each([303, 307])(
     "keeps HTTP %i dispatch unresolved without following its redirect to a 404",
     async (status) => {

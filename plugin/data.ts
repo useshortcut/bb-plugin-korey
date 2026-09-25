@@ -17,6 +17,7 @@ export const operationStatusSchema = z.enum([
   "korey-complete",
   "definite-failure",
   "reconcile-required",
+  "manually-resolved",
 ]);
 export type OperationStatus = z.infer<typeof operationStatusSchema>;
 
@@ -60,6 +61,7 @@ const operationRowSchema = z
     updated_at: z.number().int(),
     approved_at: z.number().int().nullable(),
     completed_at: z.number().int().nullable(),
+    resolution_note: z.string().nullable(),
   })
   .strict();
 
@@ -91,6 +93,7 @@ export interface OperationRecord {
   updatedAt: number;
   approvedAt: number | null;
   completedAt: number | null;
+  resolutionNote: string | null;
 }
 
 export const migrations = [
@@ -126,6 +129,7 @@ export const migrations = [
      ON korey_operations(korey_thread_id);`,
   `ALTER TABLE korey_operations ADD COLUMN request_version INTEGER NOT NULL DEFAULT 1;
    ALTER TABLE korey_operations ADD COLUMN dispatched_text TEXT;`,
+  `ALTER TABLE korey_operations ADD COLUMN resolution_note TEXT;`,
 ];
 
 function mappingRecord(value: unknown): MappingRecord {
@@ -169,6 +173,7 @@ function operationRecord(value: unknown): OperationRecord {
     updatedAt: row.updated_at,
     approvedAt: row.approved_at,
     completedAt: row.completed_at,
+    resolutionNote: row.resolution_note,
   };
 }
 
@@ -388,6 +393,7 @@ export function listUnresolvedOperations(
 }
 
 interface OperationPatch {
+  resolutionNote?: string;
   dispatchedText?: string;
   koreyThreadId?: string;
   koreyMessageId?: string;
@@ -416,6 +422,10 @@ export function transitionOperation(
     updatedAt: Date.now(),
   };
   const patch = args.patch ?? {};
+  if (patch.resolutionNote !== undefined) {
+    sets.push("resolution_note = @resolutionNote");
+    values.resolutionNote = patch.resolutionNote;
+  }
   if (patch.dispatchedText !== undefined) {
     sets.push("dispatched_text = @dispatchedText");
     values.dispatchedText = patch.dispatchedText;

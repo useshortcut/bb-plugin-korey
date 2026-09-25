@@ -60,3 +60,8 @@ history and never resends the request. If reconciliation finds no message,
 inspect Korey and Shortcut manually.
 
 For equivalent CLI commands, use `bb korey --help`.
+
+After the user has inspected Korey and Shortcut and requests closeout, run
+`bb korey operation resolve <operation-id> "<inspection result>"`. BB requires
+the user's confirmation of the operation and note. `manually-resolved` records
+local closeout; it does not verify completion or cancel work in Korey.

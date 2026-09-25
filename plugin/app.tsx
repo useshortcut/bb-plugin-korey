@@ -4,9 +4,11 @@ import {
   type PluginPendingInteractionProps,
 } from "@get-bb/plugin-sdk/app";
 import {
+  OPERATION_RESOLUTION_RENDERER_ID,
   SHORTCUT_APPROVAL_RENDERER_ID,
   shortcutApprovalPayloadSchema,
 } from "./contracts.js";
+import { OperationResolution } from "./operation-resolution.js";
 
 function ShortcutApproval({
   interaction,
@@ -177,5 +179,9 @@ export default definePluginApp((app) => {
   app.slots.pendingInteraction({
     id: SHORTCUT_APPROVAL_RENDERER_ID,
     component: ShortcutApproval,
+  });
+  app.slots.pendingInteraction({
+    id: OPERATION_RESOLUTION_RENDERER_ID,
+    component: OperationResolution,
   });
 });

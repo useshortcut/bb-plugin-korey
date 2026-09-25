@@ -1,6 +1,22 @@
 import { z } from "zod";
 
 export const SHORTCUT_APPROVAL_RENDERER_ID = "shortcut-change-approval";
+export const OPERATION_RESOLUTION_RENDERER_ID = "operation-resolution";
+
+export const operationResolutionPayloadSchema = z.strictObject({
+  operationId: z.string().min(1),
+  resolutionHash: z.string().regex(/^[a-f0-9]{64}$/u),
+  status: z.enum(["awaiting-response", "reconcile-required"]),
+  instruction: z.string(),
+  koreyThreadId: z.string().nullable(),
+  note: z.string().trim().min(1).max(2_000),
+});
+
+export const operationResolutionResponseSchema = z.strictObject({
+  confirmed: z.literal(true),
+  operationId: z.string().min(1),
+  resolutionHash: z.string().regex(/^[a-f0-9]{64}$/u),
+});
 
 export const shortcutAttachmentSummarySchema = z
   .object({
