@@ -1415,8 +1415,15 @@ export default async function plugin(bb: BbPluginApi) {
         `Korey operation ${operation.id} is ${operation.status}; only unresolved operations can be manually resolved.`,
       );
     }
+    const resolutionNote =
+      operationResolutionPayloadSchema.shape.note.safeParse(note);
+    if (!resolutionNote.success) {
+      throw new Error(
+        "The resolution note must contain 1 to 2000 characters after trimming whitespace.",
+      );
+    }
     const resolutionHash = (current: OperationRecord) =>
-      hash(JSON.stringify({ operation: current, note: note.trim() }));
+      hash(JSON.stringify({ operation: current, note: resolutionNote.data }));
     const payload = operationResolutionPayloadSchema.parse({
       operationId: operation.id,
       resolutionHash: resolutionHash(operation),
@@ -1424,7 +1431,7 @@ export default async function plugin(bb: BbPluginApi) {
       instruction: storedRequestSummarySchema.parse(operation.request)
         .instruction,
       koreyThreadId: operation.koreyThreadId,
-      note,
+      note: resolutionNote.data,
     });
     const interaction = await bb.ui.requestInput(
       {
