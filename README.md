@@ -1,9 +1,9 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/korey-mark-dark.svg">
-  <img align="right" src="assets/korey-mark-light.svg" alt="Korey" width="64">
-</picture>
-
 # bb-plugin-korey
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/5ee52bd2-9906-4cb5-90e2-06008258fad2">
+  <img src="https://github.com/user-attachments/assets/1f1e0286-a3eb-4e67-950a-a5952358a9e7" alt="Korey Flow">
+</picture>
 
 **Ask Korey to work with your connected tools from any BB harness.**
 
