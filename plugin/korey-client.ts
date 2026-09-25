@@ -224,6 +224,7 @@ export class KoreyClient {
       : timeoutSignal;
     const method = options.method ?? "GET";
     try {
+      signal.throwIfAborted();
       const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
         method,
         // A redirect can replay a POST or hide its outcome behind a later GET.
@@ -272,13 +273,16 @@ export class KoreyClient {
       const detail = unexpectedSuccess
         ? ""
         : errorDetail(response.text).trim().slice(0, 500);
-      throw new KoreyApiError(
-        `Korey API returned ${response.status}${unexpectedSuccess ? `; expected ${expectedStatus}` : ""}${detail.length > 0 ? `: ${detail}` : ""}`,
-        response.status,
+      const mutationRejected =
         options.method === "POST" &&
-          response.status >= 400 &&
-          response.status < 500 &&
-          options.mutationResponses?.[response.status] !== undefined,
+        response.status >= 400 &&
+        response.status < 500 &&
+        options.mutationResponses?.[response.status] !== undefined;
+      const uncertain = options.method === "POST" && !mutationRejected;
+      throw new KoreyApiError(
+        `Korey API returned ${response.status}${unexpectedSuccess ? `; expected ${expectedStatus}` : ""}${detail.length > 0 ? `: ${detail}` : ""}${uncertain ? "; this is not a documented rejection, so the write outcome is unknown" : ""}`,
+        response.status,
+        mutationRejected,
       );
     }
     return parseResponse(schema, response.text, path, response.status);

@@ -546,6 +546,55 @@ describe("Korey plugin conversations", () => {
 });
 
 describe("Korey Shortcut approval and recovery", () => {
+  it.each(["dispatch", "polling"])(
+    "preserves recoverable state when cancelled during %s",
+    async (stage) => {
+      const controller = new AbortController();
+      const cancel = () => {
+        controller.abort();
+        throw new Error("Cancelled in flight");
+      };
+      const responses: StubbedFetchResult[] = [
+        identityResponse(),
+        jsonResponse(koreyThread()),
+        jsonResponse(koreyThread()),
+        ...(stage === "dispatch"
+          ? [cancel]
+          : [jsonResponse({ message_id: "sent" }, 201), cancel]),
+      ];
+      const calls = stubFetch(responses);
+      const host = await loadPlugin();
+      storeMapping(host);
+      const pending = host.harness.callAgentTool(
+        "korey_shortcut_change",
+        { action: "create", instruction: "Create once" },
+        { signal: controller.signal },
+      );
+      const approval = await waitForApproval(host);
+      approve(host, approval);
+      expect(await pending).toMatchObject({ isError: true });
+      expect(
+        getOperation(host.bb.storage.database(), approval.payload.operationId),
+      ).toMatchObject({
+        status:
+          stage === "dispatch" ? "reconcile-required" : "awaiting-response",
+      });
+      if (stage === "polling") {
+        responses.push(completeResponse("Created SC-123"));
+        await host.harness.callAgentTool("korey_resume_operation", {
+          operationId: approval.payload.operationId,
+        });
+      }
+      expect(
+        getOperation(host.bb.storage.database(), approval.payload.operationId)
+          ?.status,
+      ).toBe(stage === "dispatch" ? "reconcile-required" : "korey-complete");
+      expect(calls.filter((call) => call.init?.method === "POST")).toHaveLength(
+        1,
+      );
+    },
+  );
+
   it("normalizes an update Story ID and sends only the approved update instruction", async () => {
     const calls = stubFetch([
       identityResponse(),
@@ -766,7 +815,7 @@ describe("Korey Shortcut approval and recovery", () => {
     },
   );
 
-  it.each([202, 408, 499, 500])(
+  it.each([202, 400, 408, 422, 499, 500])(
     "keeps unexpected HTTP %i mutation outcomes available for reconciliation",
     async (status) => {
       stubFetch([
