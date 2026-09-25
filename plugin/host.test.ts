@@ -10,6 +10,23 @@ import {
   MAX_TEXT_ATTACHMENT_BYTES,
 } from "./attachments.js";
 
+const { runLsof } = vi.hoisted(() => ({
+  runLsof:
+    vi.fn<
+      (
+        binary: string,
+        args: string[],
+        options: unknown,
+      ) => Promise<{ stdout: string }>
+    >(),
+}));
+
+vi.mock("node:child_process", () => ({
+  execFile: Object.assign(() => undefined, {
+    [Symbol.for("nodejs.util.promisify.custom")]: runLsof,
+  }),
+}));
+
 vi.mock("@get-bb/plugin-sdk/host", () => ({
   experimental_defineHostEntry: <T extends object>(entry: T) => ({
     experimental_apiVersion: 1,
@@ -33,12 +50,75 @@ function readAttachment(input: { path: string; workspaceRoot: string }) {
 
 const directories: string[] = [];
 afterEach(async () => {
+  vi.unstubAllGlobals();
+  runLsof.mockReset();
   await Promise.all(
     directories
       .splice(0)
       .map((dir) => rm(dir, { recursive: true, force: true })),
   );
 });
+
+it.each(["valid", "outside", "missing", "relative"])(
+  "validates the macOS lsof descriptor path (%s)",
+  async (kind) => {
+    const directory = await mkdtemp(join(tmpdir(), "korey-macos-files-"));
+    directories.push(directory);
+    const filePath = join(directory, "spec.md");
+    await writeFile(filePath, "safe content");
+    const descriptorPath =
+      kind === "valid"
+        ? filePath
+        : kind === "outside"
+          ? "/outside/spec.md"
+          : "relative.md";
+    runLsof.mockResolvedValue({
+      stdout:
+        kind === "missing"
+          ? "p123\0\nf7\0\n"
+          : `p123\0\nf7\0n${descriptorPath}\0\n`,
+    });
+    vi.stubGlobal(
+      "process",
+      new Proxy(process, {
+        get(target, property, receiver) {
+          return property === "platform"
+            ? "darwin"
+            : Reflect.get(target, property, receiver);
+        },
+      }),
+    );
+    const outcome = await Promise.resolve(
+      readAttachment({
+        path: "spec.md",
+        workspaceRoot: directory,
+      }),
+    ).then(
+      (value) => ({ value, error: null }),
+      (error: unknown) => ({
+        value: null,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    expect(outcome.error).toBe(
+      kind === "valid"
+        ? null
+        : kind === "outside"
+          ? "Attachment is outside the thread workspace: spec.md"
+          : "Could not verify the opened attachment path",
+    );
+    expect(outcome.value?.base64).toBe(
+      kind === "valid"
+        ? Buffer.from("safe content").toString("base64")
+        : undefined,
+    );
+    expect(runLsof).toHaveBeenCalledWith(
+      "/usr/sbin/lsof",
+      ["-a", "-p", String(process.pid), "-d", expect.any(String), "-F0n"],
+      expect.objectContaining({ timeout: 5_000, signal }),
+    );
+  },
+);
 
 it("reads the actual bytes relative to the thread directory and rejects oversized files", async () => {
   const directory = await mkdtemp(join(tmpdir(), "korey-files-"));
