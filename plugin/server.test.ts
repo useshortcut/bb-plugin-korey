@@ -334,6 +334,29 @@ describe("Korey plugin conversations", () => {
 });
 
 describe("Korey Shortcut approval and recovery", () => {
+  it.each(["active", "waiting", "error", "interrupted"])(
+    "rejects a %s conversation before opening approval",
+    async (state) => {
+      const calls = stubFetch([
+        identityResponse(),
+        jsonResponse(koreyThread("korey-thread-1", state)),
+      ]);
+      const host = await loadPlugin();
+      storeMapping(host);
+      const result = await host.harness.callAgentTool("korey_shortcut_change", {
+        action: "create",
+        instruction: "Create a Story",
+      });
+      expect(result).toMatchObject({ isError: true });
+      expect(JSON.stringify(result)).toContain("before requesting approval");
+      expect(host.harness.pendingInteractions).toHaveLength(0);
+      expect(
+        listOperations(host.bb.storage.database(), "thread-test", 20),
+      ).toEqual([]);
+      expect(calls.map((call) => call.init?.method)).toEqual(["GET", "GET"]);
+    },
+  );
+
   it.each(["confirm", "cancel", "tamper", "changed"] as const)(
     "requires a bound human confirmation for manual resolution (%s)",
     async (outcome) => {

@@ -817,6 +817,11 @@ export default async function plugin(bb: BbPluginApi) {
     if (destination.kind === "new-private-thread") return destination;
     const thread = await api.getThread(destination.koreyThreadId, signal);
     assertPrivateThread(thread);
+    if (thread.state !== "ready") {
+      throw new Error(
+        `Linked Korey thread ${thread.id} is ${thread.state}, not ready. Wait for Korey to finish or link a ready conversation before requesting approval.`,
+      );
+    }
     return { ...destination, koreyThreadRevision: thread.updated_at };
   }
 
