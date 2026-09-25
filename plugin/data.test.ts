@@ -3,12 +3,15 @@ import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { shortcutApprovalPayloadSchema } from "./contracts.js";
 import {
+  beginMappingCreate,
   createOperation,
   getOperation,
+  getMapping,
   listUnresolvedOperations,
   migrations,
   recoverInterruptedOperations,
   reserveMapping,
+  setLinkedMapping,
   transitionOperation,
 } from "./data.js";
 
@@ -33,6 +36,51 @@ function request(operationId: string) {
 }
 
 describe("Korey durable state", () => {
+  it("keeps one-to-one links and explains how to move an existing link", () => {
+    const db = new Database(":memory:");
+    try {
+      migrations.forEach((migration) => db.exec(migration));
+      const original = setLinkedMapping(db, "thread-one", "korey-one");
+      expect(() => setLinkedMapping(db, "thread-two", "korey-one")).toThrow(
+        "bb korey unlink --bb-thread thread-one",
+      );
+      expect(getMapping(db, "thread-one")).toEqual(original);
+      expect(getMapping(db, "thread-two")).toBeNull();
+      expect(setLinkedMapping(db, "thread-one", "korey-one").state).toBe(
+        "ready",
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("releases undispatched reservations on restart and preserves ambiguous creation markers", () => {
+    const db = new Database(":memory:");
+    try {
+      migrations.forEach((migration) => db.exec(migration));
+      reserveMapping(db, "reserved", "marker-one");
+      const creating = reserveMapping(db, "creating", "marker-two");
+      beginMappingCreate(db, "creating", creating.generation);
+      const linked = setLinkedMapping(db, "ready", "korey-one");
+      recoverInterruptedOperations(db);
+      expect(getMapping(db, "reserved")).toMatchObject({
+        state: "unlinked",
+        marker: null,
+        generation: 2,
+      });
+      expect(getMapping(db, "creating")).toMatchObject({
+        state: "reconcile-required",
+        marker: "marker-two",
+        generation: creating.generation,
+      });
+      expect(getMapping(db, "ready")).toEqual(linked);
+      recoverInterruptedOperations(db);
+      expect(getMapping(db, "reserved")?.generation).toBe(2);
+    } finally {
+      db.close();
+    }
+  });
+
   it("migrates old journals and reads historical requests without today's approval schema", () => {
     const db = new Database(":memory:");
     try {

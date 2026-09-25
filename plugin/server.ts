@@ -457,7 +457,11 @@ export default async function plugin(bb: BbPluginApi) {
     const thread = await bb.sdk.threads.get({ threadId: bbThreadId });
     const label = thread.title?.trim() || thread.id;
     const suffix = ` [${MAPPING_MARKER_PREFIX}:${marker}]`;
-    return `BB: ${label}`.slice(0, 120 - suffix.length) + suffix;
+    return (
+      `BB: ${label}`
+        .slice(0, 120 - suffix.length)
+        .replace(/[\uD800-\uDBFF]$/u, "") + suffix
+    );
   }
 
   async function findMappedThread(
@@ -467,23 +471,34 @@ export default async function plugin(bb: BbPluginApi) {
   ): Promise<KoreyThread | null> {
     const token = `${MAPPING_MARKER_PREFIX}:${marker}`;
     const matches: KoreyThread[] = [];
-    let after: string | undefined;
-    do {
-      const page = await api.listThreads({
-        after,
-        limit: 50,
-        query: token,
-        signal,
-      });
-      matches.push(
-        ...page.data.filter((thread) => thread.name?.includes(token) ?? false),
-      );
-      if (!page.has_more) break;
-      if (page.last_id === null || page.last_id === after) {
-        throw new Error("Korey thread pagination did not advance");
+    // Search indexes can tokenize the marker differently. Fall back to an
+    // owned-thread scan when search misses, and bound both traversals.
+    for (const query of [token, undefined]) {
+      let after: string | undefined;
+      const cursors = new Set<string>();
+      for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
+        const page = await api.listThreads({ after, limit: 50, query, signal });
+        for (const thread of page.data) {
+          if (
+            thread.name?.includes(`[${token}]`) &&
+            !matches.some((match) => match.id === thread.id)
+          )
+            matches.push(thread);
+        }
+        if (!page.has_more || matches.length > 1) break;
+        if (page.last_id === null || cursors.has(page.last_id)) {
+          throw new Error("Korey thread pagination did not advance");
+        }
+        if (pageNumber === 19) {
+          throw new Error(
+            "Korey mapping reconciliation exceeded 20 pages; inspect Korey and link the conversation manually.",
+          );
+        }
+        cursors.add(page.last_id);
+        after = page.last_id;
       }
-      after = page.last_id;
-    } while (matches.length < 2);
+      if (matches.length > 0) break;
+    }
     if (matches.length > 1) {
       throw new Error(
         `Multiple Korey threads match mapping marker ${marker}; link the intended thread manually.`,

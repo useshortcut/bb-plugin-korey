@@ -287,9 +287,24 @@ export function setLinkedMapping(
   bbThreadId: string,
   koreyThreadId: string,
 ): MappingRecord {
-  const now = Date.now();
-  db.prepare(
-    `INSERT INTO korey_mappings (
+  return db
+    .transaction(() => {
+      const owner = db
+        .prepare(
+          "SELECT bb_thread_id FROM korey_mappings WHERE korey_thread_id = ? AND bb_thread_id != ?",
+        )
+        .get(koreyThreadId, bbThreadId);
+      if (owner !== undefined) {
+        const { bb_thread_id: ownerId } = z
+          .object({ bb_thread_id: z.string() })
+          .parse(owner);
+        throw new Error(
+          `Korey thread ${koreyThreadId} is already linked to BB thread ${ownerId}. Unlink it there with bb korey unlink --bb-thread ${ownerId}, then link it here.`,
+        );
+      }
+      const now = Date.now();
+      db.prepare(
+        `INSERT INTO korey_mappings (
        bb_thread_id, korey_thread_id, marker, state, generation,
        created_at, updated_at
      ) VALUES (?, ?, NULL, 'ready', 1, ?, ?)
@@ -299,8 +314,10 @@ export function setLinkedMapping(
        state = 'ready',
        generation = korey_mappings.generation + 1,
        updated_at = excluded.updated_at`,
-  ).run(bbThreadId, koreyThreadId, now, now);
-  return getMappingRequired(db, bbThreadId);
+      ).run(bbThreadId, koreyThreadId, now, now);
+      return getMappingRequired(db, bbThreadId);
+    })
+    .immediate();
 }
 
 export function setUnlinkedMapping(db: Db, bbThreadId: string): boolean {
@@ -499,6 +516,14 @@ export function updateOperationError(
 
 export function recoverInterruptedOperations(db: Db): void {
   const now = Date.now();
+  // A reservation precedes every remote dispatch. Release only reservations;
+  // once creation might have started, retain its marker for reconciliation.
+  db.prepare(`UPDATE korey_mappings
+    SET state = 'unlinked', marker = NULL, korey_thread_id = NULL,
+        generation = generation + 1, updated_at = ?
+    WHERE state = 'reserved'`).run(now);
+  db.prepare(`UPDATE korey_mappings SET state = 'reconcile-required', updated_at = ?
+    WHERE state = 'create-dispatching'`).run(now);
   db.prepare(
     `UPDATE korey_operations
         SET status = 'cancelled', error = 'Approval ended when the plugin stopped',

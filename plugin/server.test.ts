@@ -10,9 +10,11 @@ import {
   shortcutApprovalPayloadSchema,
 } from "./contracts.js";
 import {
+  beginMappingCreate,
   getMapping,
   getOperation,
   listUnresolvedOperations,
+  reserveMapping,
   listOperations,
   setLinkedMapping,
   transitionOperation,
@@ -131,6 +133,7 @@ async function loadPlugin(
   options: {
     attachment?: ReadAttachmentResult;
     settings?: { apiToken?: string };
+    title?: string;
   } = {},
 ): Promise<FakePluginHost> {
   const host = createFakePluginHost({
@@ -169,7 +172,7 @@ async function loadPlugin(
         get: async ({ threadId }) =>
           makeThreadResponse({
             id: threadId,
-            title: "Shape the feature",
+            title: options.title ?? "Shape the feature",
             environmentId: "env-test",
           }),
       },
@@ -219,6 +222,134 @@ afterEach(async () => {
 });
 
 describe("Korey plugin conversations", () => {
+  it.each([false, true])(
+    "reconciles mapping markers across pages with owned-list fallback (%s)",
+    async (fallback) => {
+      const marker = "11111111-1111-4111-8111-111111111111";
+      const matched = {
+        ...koreyThread(),
+        name: `BB: Recovered [bb-korey:${marker}]`,
+      };
+      const page = (data: unknown[], after: string | null, more: boolean) =>
+        jsonResponse({
+          data,
+          first_id: after,
+          last_id: after,
+          has_more: more,
+          limit: 50,
+        });
+      const calls = stubFetch([
+        ...(fallback ? [page([], null, false)] : []),
+        page([koreyThread("unrelated")], "unrelated", true),
+        page([matched], matched.id, false),
+        jsonResponse(matched),
+        jsonResponse({ message_id: "sent" }, 201),
+        completeResponse(),
+      ]);
+      const host = await loadPlugin();
+      const mapping = reserveMapping(
+        host.bb.storage.database(),
+        "thread-test",
+        marker,
+      );
+      beginMappingCreate(
+        host.bb.storage.database(),
+        "thread-test",
+        mapping.generation,
+      );
+      const result = await host.harness.callAgentTool("korey_ask", {
+        prompt: "Continue",
+      });
+      expect(result).toBeTypeOf("string");
+      expect(
+        getMapping(host.bb.storage.database(), "thread-test"),
+      ).toMatchObject({ state: "ready", koreyThreadId: matched.id });
+      const pages = calls.filter(
+        (call) => new URL(call.url).pathname === "/api/v1/threads",
+      );
+      expect(pages.map((call) => call.init?.method)).toEqual(
+        Array(fallback ? 3 : 2).fill("GET"),
+      );
+      expect(new URL(pages.at(-1)!.url).searchParams.get("after")).toBe(
+        "unrelated",
+      );
+      expect(new URL(pages.at(-1)!.url).searchParams.has("q")).toBe(!fallback);
+    },
+  );
+
+  it.each(["duplicate", "stalled", "limit"])(
+    "keeps mapping recovery unresolved for %s results",
+    async (problem) => {
+      const marker = "11111111-1111-4111-8111-111111111111";
+      const matches = ["one", "two"].map((id) => ({
+        ...koreyThread(id),
+        name: `BB: [bb-korey:${marker}]`,
+      }));
+      const responses =
+        problem === "duplicate"
+          ? [
+              jsonResponse({
+                data: matches,
+                first_id: "one",
+                last_id: "two",
+                has_more: false,
+                limit: 50,
+              }),
+            ]
+          : Array.from({ length: problem === "stalled" ? 2 : 20 }, (_, index) =>
+              jsonResponse({
+                data: [],
+                first_id: null,
+                last_id: problem === "stalled" ? "same" : String(index),
+                has_more: true,
+                limit: 50,
+              }),
+            );
+      const calls = stubFetch(responses);
+      const host = await loadPlugin();
+      const mapping = reserveMapping(
+        host.bb.storage.database(),
+        "thread-test",
+        marker,
+      );
+      beginMappingCreate(
+        host.bb.storage.database(),
+        "thread-test",
+        mapping.generation,
+      );
+      const result = await host.harness.callAgentTool("korey_ask", {
+        prompt: "Continue",
+      });
+      expect(result).toMatchObject({ isError: true });
+      expect(JSON.stringify(result)).toContain(
+        problem === "duplicate"
+          ? "Multiple Korey threads"
+          : problem === "stalled"
+            ? "pagination did not advance"
+            : "exceeded 20 pages",
+      );
+      expect(calls.every((call) => call.init?.method === "GET")).toBe(true);
+      expect(
+        getMapping(host.bb.storage.database(), "thread-test")?.koreyThreadId,
+      ).toBeNull();
+    },
+  );
+
+  it("preserves Unicode when truncating a marked conversation name", async () => {
+    const calls = stubFetch([
+      jsonResponse({ thread_id: "korey-thread-1", message_id: null }, 201),
+      jsonResponse(koreyThread()),
+      jsonResponse({ message_id: "sent" }, 201),
+      completeResponse(),
+    ]);
+    const host = await loadPlugin({ title: `${"a".repeat(67)}🚀 finish` });
+    await host.harness.callAgentTool("korey_ask", { prompt: "Hello" });
+    const name: string = JSON.parse(String(calls[0]?.init?.body)).name;
+    expect(Buffer.from(name, "utf8").toString("utf8")).toBe(name);
+    expect(name.length).toBeLessThanOrEqual(120);
+    expect(name).toMatch(/\[bb-korey:[a-f0-9-]+\]$/u);
+  });
+
   it("creates one marked private thread and persists its mapping", async () => {
     const calls = stubFetch([
       jsonResponse({ thread_id: "korey-thread-1", message_id: null }, 201),
