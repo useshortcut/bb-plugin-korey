@@ -1748,9 +1748,17 @@ export default async function plugin(bb: BbPluginApi) {
           `Unknown command ${JSON.stringify(command)}\n${usage()}`,
         );
       } catch (error) {
+        const message =
+          error instanceof Error &&
+          "code" in error &&
+          error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+            ? "Unknown option. See bb korey --help for supported options. Use -- before positional text starting with a dash."
+            : error instanceof Error
+              ? error.message
+              : String(error);
         return {
           exitCode: 1,
-          stderr: `${error instanceof Error ? error.message : String(error)}\n`,
+          stderr: `${message}\n`,
         };
       }
     },
