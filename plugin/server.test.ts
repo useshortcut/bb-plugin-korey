@@ -246,11 +246,15 @@ describe("Korey plugin conversations", () => {
     ["consultation", "cancellation"],
     ["write", "sdk failure"],
     ["write", "cancellation"],
+    ["connector", "sdk failure"],
+    ["connector", "cancellation"],
   ])(
     "releases the mapping after %s preparation ends with %s before dispatch",
     async (mode, failure) => {
-      const responses: StubbedFetchResult[] =
-        mode === "write" ? [identityResponse()] : [];
+      const isChange = mode !== "consultation";
+      const responses: StubbedFetchResult[] = isChange
+        ? [identityResponse()]
+        : [];
       const calls = stubFetch(responses);
       const host = await loadPlugin();
       const db = host.bb.storage.database();
@@ -267,7 +271,9 @@ describe("Korey plugin conversations", () => {
       const input =
         mode === "write"
           ? { action: "create", instruction: "Create one Story." }
-          : { prompt: "Review the draft." };
+          : mode === "connector"
+            ? { prompt: "Enable checkout-v2 in staging.", mode: "change" }
+            : { prompt: "Review the draft." };
       const failed = await host.harness.callAgentTool(tool, input, {
         signal: controller.signal,
       });
@@ -281,16 +287,16 @@ describe("Korey plugin conversations", () => {
       });
       expect(
         listOperations(db, "thread-test", 20).map(({ status }) => status),
-      ).toEqual(mode === "write" ? ["definite-failure"] : []);
+      ).toEqual(isChange ? ["definite-failure"] : []);
       expect(calls.map(({ init }) => init?.method)).toEqual(
-        mode === "write" ? ["GET"] : [],
+        isChange ? ["GET"] : [],
       );
 
       host.harness.inspection.sdk.stub("threads.get", async () =>
         makeThreadResponse({ id: "thread-test", title: "Retry safely" }),
       );
       responses.push(
-        ...(mode === "write" ? [identityResponse()] : []),
+        ...(isChange ? [identityResponse()] : []),
         jsonResponse({ thread_id: "korey-thread-1", message_id: null }, 201),
         jsonResponse(koreyThread()),
         jsonResponse({ message_id: "sent" }, 201),
@@ -625,6 +631,420 @@ describe("Korey plugin conversations", () => {
           call.url.endsWith("/messages") && call.init?.method === "POST",
       ),
     ).toHaveLength(1);
+  });
+});
+
+describe("Korey connector changes", () => {
+  it.each(["agent", "cli"])(
+    "sends a requested flag change with attachments through the %s interface",
+    async (surface) => {
+      const attachmentId = "7c1d7259-9c10-4e68-98ef-227fe57aad91";
+      const calls = stubFetch([
+        identityResponse(),
+        jsonResponse(koreyThread()),
+        jsonResponse(koreyThread()),
+        jsonResponse([{ id: attachmentId, filename: "spec.md" }], 201),
+        jsonResponse({ message_id: "flag-change" }, 201),
+        completeResponse("Enabled checkout-v2 in staging."),
+      ]);
+      const host = await loadPlugin();
+      storeMapping(host);
+      const prompt =
+        "Enable LaunchDarkly flag checkout-v2 in the shop project's staging environment.";
+      let cliExitCode: number | undefined;
+      const result =
+        surface === "agent"
+          ? JSON.parse(
+              String(
+                await host.harness.callAgentTool("korey_ask", {
+                  prompt,
+                  mode: "change",
+                  files: ["spec.md"],
+                }),
+              ),
+            )
+          : await host.harness
+              .runCli([
+                "ask",
+                "--change",
+                prompt,
+                "--file",
+                "spec.md",
+                "--bb-thread",
+                "thread-test",
+                "--json",
+              ])
+              .then((result) => {
+                cliExitCode = result.exitCode;
+                return JSON.parse(result.stdout);
+              });
+      expect(cliExitCode).toBe(surface === "cli" ? 0 : undefined);
+      expect(result).toMatchObject({
+        action: "change",
+        storyId: null,
+        status: "korey-complete",
+        requestVersion: 3,
+        response: "Enabled checkout-v2 in staging.",
+        approvedAt: null,
+      });
+      const operation = getOperation(
+        host.bb.storage.database(),
+        result.operationId,
+      )!;
+      expect(operation.request.instruction).toBe(prompt);
+      expect(operation.request.attachments).toEqual([
+        expect.objectContaining({
+          filename: "spec.md",
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        }),
+      ]);
+      const body = JSON.parse(String(calls[4]?.init?.body));
+      expect(body).toMatchObject({
+        text: operation.dispatchedText,
+        attachment_ids: [attachmentId],
+      });
+      expect(body.text).toContain(prompt);
+      expect(body.text).toContain(
+        `bb operation reference: ${result.operationId}`,
+      );
+      expect(body.text).not.toContain("consultation-only");
+      expect(body.text).not.toContain("Shortcut Story");
+      expect(calls.filter(({ init }) => init?.method === "POST")).toHaveLength(
+        2,
+      );
+      expect(host.harness.pendingInteractions).toHaveLength(0);
+      const listed = await host.harness.runCli([
+        "operation",
+        "list",
+        "--bb-thread",
+        "thread-test",
+      ]);
+      expect(listed.stdout).toContain("change");
+      expect(listed.stdout).not.toContain("new Story");
+    },
+  );
+
+  it("creates a marked private conversation for a first connector change", async () => {
+    const calls = stubFetch([
+      identityResponse(),
+      jsonResponse({ thread_id: "korey-thread-1", message_id: null }, 201),
+      jsonResponse(koreyThread()),
+      jsonResponse({ message_id: "changed" }, 201),
+      completeResponse("Resolved the requested Sentry issue."),
+    ]);
+    const host = await loadPlugin();
+    const result = JSON.parse(
+      String(
+        await host.harness.callAgentTool("korey_ask", {
+          prompt: "Resolve Sentry issue SHOP-42.",
+          mode: "change",
+        }),
+      ),
+    );
+    expect(result.status).toBe("korey-complete");
+    expect(JSON.parse(String(calls[1]?.init?.body))).toMatchObject({
+      name: expect.stringContaining(`[bb-korey:${result.operationId}]`),
+      is_private: true,
+    });
+    expect(getMapping(host.bb.storage.database(), "thread-test")).toMatchObject(
+      {
+        state: "ready",
+        marker: result.operationId,
+      },
+    );
+  });
+
+  it.each(["connector", "shortcut"])(
+    "blocks both write routes after an ambiguous %s change while allowing consultation",
+    async (kind) => {
+      const responses: StubbedFetchResult[] = [
+        identityResponse(),
+        jsonResponse(koreyThread()),
+        jsonResponse(koreyThread()),
+        new Error("connection reset"),
+        messagePage(),
+      ];
+      const calls = stubFetch(responses);
+      const host = await loadPlugin();
+      storeMapping(host);
+      const connector = {
+        prompt: "Enable checkout-v2 in staging.",
+        mode: "change",
+      };
+      const shortcut = { action: "create", instruction: "Create one Story." };
+      const failed = await host.harness.callAgentTool(
+        kind === "connector" ? "korey_ask" : "korey_shortcut_change",
+        kind === "connector" ? connector : shortcut,
+      );
+      expect(failed).toMatchObject({ isError: true });
+      const operation = listOperations(
+        host.bb.storage.database(),
+        "thread-test",
+        10,
+      )[0]!;
+      expect(operation.status).toBe("reconcile-required");
+      for (const [tool, input] of [
+        ["korey_ask", connector],
+        ["korey_shortcut_change", shortcut],
+      ] as const) {
+        const blocked = await host.harness.callAgentTool(tool, input);
+        expect(blocked).toMatchObject({ isError: true });
+        expect(JSON.stringify(blocked)).toContain(operation.id);
+        expect(JSON.stringify(blocked)).toContain("This request was not sent");
+      }
+      expect(calls).toHaveLength(5);
+      responses.push(
+        jsonResponse(koreyThread()),
+        jsonResponse({ message_id: "inspection" }, 201),
+        completeResponse("The target is still enabled."),
+      );
+      const inspection = await host.harness.callAgentTool("korey_ask", {
+        prompt: "Inspect the target's current state without changing it.",
+        mode: "consult",
+      });
+      expect(JSON.parse(String(inspection)).response).toBe(
+        "The target is still enabled.",
+      );
+      expect(JSON.parse(String(calls[6]?.init?.body)).text).toContain(
+        "consultation-only",
+      );
+      expect(
+        listOperations(host.bb.storage.database(), "thread-test", 10),
+      ).toHaveLength(1);
+      expect(
+        getOperation(host.bb.storage.database(), operation.id)?.status,
+      ).toBe("reconcile-required");
+    },
+  );
+
+  it.each(["resume", "reconcile"])(
+    "can %s a connector change after reload and relinking without resending",
+    async (action) => {
+      const responses: StubbedFetchResult[] = [
+        identityResponse(),
+        jsonResponse(koreyThread()),
+        jsonResponse(koreyThread()),
+        ...(action === "resume"
+          ? [
+              jsonResponse({ message_id: "sent" }, 201),
+              jsonResponse({ message: "Read unavailable" }, 400),
+            ]
+          : [new Error("connection reset"), messagePage()]),
+      ];
+      const calls = stubFetch(responses);
+      const host = await loadPlugin();
+      storeMapping(host);
+      expect(
+        await host.harness.callAgentTool("korey_ask", {
+          prompt: "Enable checkout-v2 in staging.",
+          mode: "change",
+        }),
+      ).toMatchObject({ isError: true });
+      const operation = listOperations(
+        host.bb.storage.database(),
+        "thread-test",
+        10,
+      )[0]!;
+      expect(operation.requestVersion).toBe(3);
+      await host.harness.callAgentTool("korey_unlink_thread", {});
+      setLinkedMapping(
+        host.bb.storage.database(),
+        "thread-other",
+        "korey-thread-1",
+      );
+      const reloaded = await host.harness.lifecycle.reload(koreyPlugin);
+      hosts[hosts.indexOf(host)] = reloaded;
+      let unmatched: { reconciled: boolean; status: string } | undefined;
+      if (action === "reconcile") {
+        responses.push(
+          messagePage([userMessage(`Please inspect ${operation.id}.`)]),
+        );
+        const inspected = await reloaded.harness.callAgentTool(
+          "korey_reconcile_operation",
+          { operationId: operation.id },
+          { threadId: "thread-other" },
+        );
+        unmatched = JSON.parse(String(inspected));
+        responses.push(
+          messagePage([userMessage(operation.dispatchedText!, "sent")]),
+        );
+      }
+      expect(unmatched?.reconciled).toBe(
+        action === "reconcile" ? false : undefined,
+      );
+      expect(unmatched?.status).toBe(
+        action === "reconcile" ? "reconcile-required" : undefined,
+      );
+      responses.push(completeResponse("Enabled checkout-v2."));
+      const result = await reloaded.harness.callAgentTool(
+        action === "resume"
+          ? "korey_resume_operation"
+          : "korey_reconcile_operation",
+        { operationId: operation.id },
+        { threadId: "thread-other" },
+      );
+      expect(JSON.parse(String(result))).toMatchObject({
+        operationId: operation.id,
+        action: "change",
+        status: "korey-complete",
+        requestVersion: 3,
+      });
+      expect(calls.filter(({ init }) => init?.method === "POST")).toHaveLength(
+        1,
+      );
+    },
+  );
+
+  it.each(["active", "shared"])(
+    "rejects a connector change in an %s conversation before journaling",
+    async (state) => {
+      const calls = stubFetch([
+        identityResponse(),
+        jsonResponse({
+          ...koreyThread(undefined, state === "active" ? state : "ready"),
+          is_private: state !== "shared",
+        }),
+      ]);
+      const host = await loadPlugin();
+      storeMapping(host);
+      const result = await host.harness.callAgentTool("korey_ask", {
+        prompt: "Enable checkout-v2 in staging.",
+        mode: "change",
+      });
+      expect(result).toMatchObject({ isError: true });
+      expect(
+        listOperations(host.bb.storage.database(), "thread-test", 10),
+      ).toEqual([]);
+      expect(calls.every(({ init }) => init?.method === "GET")).toBe(true);
+    },
+  );
+
+  it.each(["confirm", "cancel"])(
+    "requires confirmation for manual connector closeout (%s)",
+    async (outcome) => {
+      const calls = stubFetch([
+        identityResponse(),
+        jsonResponse(koreyThread()),
+        jsonResponse(koreyThread()),
+        new Error("connection reset"),
+        messagePage(),
+      ]);
+      const host = await loadPlugin();
+      storeMapping(host);
+      await host.harness.callAgentTool("korey_ask", {
+        prompt: "Enable checkout-v2 in staging.",
+        mode: "change",
+      });
+      const db = host.bb.storage.database();
+      const before = listOperations(db, "thread-test", 1)[0]!;
+      expect(before.status).toBe("reconcile-required");
+      const resolving = host.harness.runCli([
+        "operation",
+        "resolve",
+        before.id,
+        "Verified checkout-v2 is enabled in staging.",
+        "--bb-thread",
+        "thread-test",
+        "--json",
+      ]);
+      const interaction = await vi.waitFor(() => {
+        const current = host.harness.pendingInteractions[0];
+        expect(current).toBeDefined();
+        return current!;
+      });
+      const payload = operationResolutionPayloadSchema.parse(
+        interaction.payload,
+      );
+      expect(payload.instruction).toBe("Enable checkout-v2 in staging.");
+      expect(getOperation(db, before.id)).toEqual(before);
+      if (outcome === "confirm") {
+        host.harness.submitInteraction(interaction.id, {
+          confirmed: true,
+          operationId: before.id,
+          resolutionHash: payload.resolutionHash,
+        });
+      } else {
+        host.harness.cancelInteraction(interaction.id);
+      }
+      expect((await resolving).exitCode).toBe(outcome === "confirm" ? 0 : 1);
+      expect(getOperation(db, before.id)).toMatchObject({
+        status: outcome === "confirm" ? "manually-resolved" : before.status,
+        resolutionNote: outcome === "confirm" ? payload.note : null,
+        requestVersion: 3,
+        request: before.request,
+        dispatchedText: before.dispatchedText,
+      });
+      expect(calls).toHaveLength(5);
+    },
+  );
+
+  it.each(["dispatch", "polling"])(
+    "preserves a cancelled connector operation during %s",
+    async (stage) => {
+      const controller = new AbortController();
+      const cancelled = () => {
+        controller.abort();
+        throw new Error("request cancelled");
+      };
+      const responses: StubbedFetchResult[] = [
+        identityResponse(),
+        jsonResponse(koreyThread()),
+        jsonResponse(koreyThread()),
+      ];
+      if (stage === "dispatch") responses.push(cancelled);
+      else responses.push(jsonResponse({ message_id: "sent" }, 201), cancelled);
+      const calls = stubFetch(responses);
+      const host = await loadPlugin();
+      storeMapping(host);
+      const failed = await host.harness.callAgentTool(
+        "korey_ask",
+        {
+          prompt: "Enable checkout-v2 in staging.",
+          mode: "change",
+        },
+        { signal: controller.signal },
+      );
+      expect(failed).toMatchObject({ isError: true });
+      const operation = listOperations(
+        host.bb.storage.database(),
+        "thread-test",
+        1,
+      )[0]!;
+      expect(operation).toMatchObject({
+        requestVersion: 3,
+        status:
+          stage === "dispatch" ? "reconcile-required" : "awaiting-response",
+      });
+      let resumedStatus: string | undefined;
+      if (stage === "polling") {
+        responses.push(completeResponse("Enabled checkout-v2."));
+        const resumed = await host.harness.callAgentTool(
+          "korey_resume_operation",
+          { operationId: operation.id },
+        );
+        resumedStatus = JSON.parse(String(resumed)).status;
+      }
+      expect(resumedStatus).toBe(
+        stage === "polling" ? "korey-complete" : undefined,
+      );
+      expect(calls.filter(({ init }) => init?.method === "POST")).toHaveLength(
+        1,
+      );
+    },
+  );
+
+  it.each([
+    ["status"],
+    ["threads"],
+    ["shortcut", "create", "Create one Story"],
+    ["operation", "list"],
+  ])("rejects --change outside ask (%s)", async (...args) => {
+    const calls = stubFetch([]);
+    const host = await loadPlugin();
+    const result = await host.harness.runCli([...args, "--change"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--change is supported only by ask");
+    expect(calls).toHaveLength(0);
   });
 });
 

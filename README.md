@@ -28,6 +28,9 @@ through Shortcut’s fields and workflow one step at a time.
 > Ask Korey which LaunchDarkly flags control the new checkout flow and who has
 > access to it.
 
+> Ask Korey to enable the checkout-v2 LaunchDarkly flag in the shop project's
+> staging environment.
+
 > Ask Korey to compare this implementation plan with the existing Shortcut
 > Stories and point out what we missed.
 
@@ -35,10 +38,11 @@ The plugin keeps a private Korey conversation linked to each bb thread, so you
 can follow up with more context, attach workspace files, and continue the same
 conversation as you change harnesses.
 
-The current version supports research, analysis, and drafts across Korey’s
-connected services, plus Shortcut Story creation and updates. Requested Story
-changes go straight to Korey. Available data and actions depend on the
-connectors and permissions in your Korey workspace.
+The plugin supports research, analysis, drafts, and user-requested changes across
+Korey’s connected services, including feature-flag updates. Shortcut Story
+creation and updates retain a dedicated tool. Requested changes go straight to
+Korey. Available data and actions depend on the connectors and permissions in
+your Korey workspace.
 
 ## Get started
 
@@ -73,13 +77,18 @@ bb korey status
 ```sh
 bb korey ask "Summarize the Sentry errors introduced in our latest release"
 bb korey ask "Review this rollout plan against our LaunchDarkly flags" --file plan.md
+bb korey ask --change "Enable checkout-v2 in the shop project's staging environment"
 bb korey shortcut create "Create a Story for the bug investigated in this conversation"
 ```
 
-When you ask for a Shortcut Story to be created or updated, the plugin sends
-your request directly to Korey, which handles it through its Shortcut connector.
-There is no extra approval form. If an earlier operation has an unknown outcome,
-the plugin stops and provides recovery steps before another change is sent.
+Use `ask --change` for a requested connector action, and `shortcut create` or
+`shortcut update` for Stories. Plain `ask` requests research or a draft without
+changes. When talking to an agent, just say “Ask Korey…” and describe the desired
+outcome; the agent selects the appropriate tool and mode.
+
+Requested changes go directly to Korey without an extra approval form. Both
+change routes use the same operation journal. If an earlier operation has an
+unknown outcome, the plugin provides recovery steps before another change is sent.
 You can also link an existing private Korey conversation and continue work you
 started there.
 
