@@ -407,7 +407,7 @@ export default async function plugin(bb: BbPluginApi) {
       type: "string",
       label: "Korey personal access token",
       description:
-        "Create a token with threads:read:own and threads:write scopes in Korey settings.",
+        "Create a token with threads:read and threads:write scopes in Korey settings.",
       secret: true,
     },
   });
