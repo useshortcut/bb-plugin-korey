@@ -2,8 +2,8 @@
 
 For setup and example requests, start with the [README](../README.md).
 Connectors, their permissions, and reauthentication are managed in Korey.
-The plugin uses your Korey personal access token to continue private
-conversations from BB.
+The plugin uses your [Korey personal access token](https://app.korey.ai/settings/api-tokens)
+to continue private conversations from BB.
 
 ## CLI and agent tools
 

@@ -48,8 +48,8 @@ for the limits of those checks.
 
 1. Connect the services you want to use in [Korey](https://korey.ai). See
    [Korey’s connector guides](https://korey.ai/docs/connectors/overview) for setup.
-2. Create a Korey personal access token with `threads:read` and
-   `threads:write` scopes.
+2. [Create a Korey personal access token](https://app.korey.ai/settings/api-tokens)
+   with `threads:read` and `threads:write` scopes.
 3. Install the plugin:
 
    ```sh

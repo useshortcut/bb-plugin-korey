@@ -54,6 +54,8 @@ const CONSULT_PREFIX = [
 const MAPPING_MARKER_PREFIX = "bb-korey";
 const MAX_STORED_RESPONSE_BYTES = 64 * 1024;
 const INTERACTION_TIMEOUT_MS = 10 * 60_000;
+const API_TOKEN_URL = "https://app.korey.ai/settings/api-tokens";
+const TOKEN_SETUP_GUIDANCE = `Create a Korey personal access token at ${API_TOKEN_URL} and add it under Settings -> Installed plugins -> Korey.`;
 
 const CLI_COMMANDS = [
   {
@@ -406,24 +408,19 @@ export default async function plugin(bb: BbPluginApi) {
     apiToken: {
       type: "string",
       label: "Korey personal access token",
-      description:
-        "Create a token with threads:read and threads:write scopes in Korey settings.",
+      description: `Create a token at ${API_TOKEN_URL} with threads:read and threads:write scopes.`,
       secret: true,
     },
   });
 
   if (!(await settings.get()).apiToken) {
-    bb.status.needsConfiguration(
-      "Add a Korey personal access token in Settings -> Plugins -> Korey.",
-    );
+    bb.status.needsConfiguration(TOKEN_SETUP_GUIDANCE);
   }
 
   async function client(): Promise<KoreyClient> {
     const { apiToken } = await settings.get();
     if (!apiToken) {
-      throw new Error(
-        "Korey is not configured. Add a personal access token in plugin settings.",
-      );
+      throw new Error(`Korey is not configured. ${TOKEN_SETUP_GUIDANCE}`);
     }
     return new KoreyClient({ token: apiToken });
   }
