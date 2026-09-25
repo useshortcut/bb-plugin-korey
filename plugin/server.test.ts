@@ -546,6 +546,42 @@ describe("Korey plugin conversations", () => {
 });
 
 describe("Korey Shortcut approval and recovery", () => {
+  it.each(["timeout", "request-aborted"])(
+    "cancels approval without dispatch when it ends via %s",
+    async (reason) => {
+      vi.useFakeTimers();
+      try {
+        const controller = new AbortController();
+        const calls = stubFetch([identityResponse()]);
+        const host = await loadPlugin();
+        const pending = host.harness.callAgentTool(
+          "korey_shortcut_change",
+          { action: "create", instruction: "Create a Story" },
+          { signal: controller.signal },
+        );
+        const approval = await waitForApproval(host);
+        expect(host.harness.pendingInteractions[0]?.timeoutMs).toBe(
+          10 * 60_000,
+        );
+        if (reason === "timeout")
+          await vi.advanceTimersByTimeAsync(10 * 60_000);
+        else controller.abort();
+        const result = await pending;
+        expect(result).toMatchObject({ isError: true });
+        expect(JSON.stringify(result)).toContain(reason);
+        expect(
+          getOperation(
+            host.bb.storage.database(),
+            approval.payload.operationId,
+          ),
+        ).toMatchObject({ status: "cancelled" });
+        expect(calls.map((call) => call.init?.method)).toEqual(["GET"]);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it.each(["dispatch", "polling"])(
     "preserves recoverable state when cancelled during %s",
     async (stage) => {
@@ -1203,102 +1239,114 @@ describe("Korey Shortcut approval and recovery", () => {
     });
   });
 
-  it("reconciles only the exact request and expected attachments", async () => {
-    const attachmentId = "7c1d7259-9c10-4e68-98ef-227fe57aad91";
-    const responses: StubbedFetchResult[] = [
-      identityResponse(),
-      jsonResponse(koreyThread()),
-      jsonResponse(koreyThread()),
-      jsonResponse([{ id: attachmentId, filename: "spec.md" }], 201),
-      new Error("connection reset"),
-      messagePage(),
-    ];
-    const calls = stubFetch(responses);
-    const host = await loadPlugin();
-    storeMapping(host);
-    const pendingResult = host.harness.callAgentTool("korey_shortcut_change", {
-      action: "create",
-      instruction: "Create one approved Story.",
-      files: ["spec.md"],
-    });
-    const interaction = await waitForApproval(host);
-    approve(host, interaction);
-    await pendingResult;
-
-    const sentBody = JSON.parse(String(calls[4]?.init?.body));
-    // Reconciliation uses the recorded bytes even if a later approval schema
-    // has changed. Historical records must remain inspectable as well.
-    host.bb.storage
-      .database()
-      .prepare(
-        "UPDATE korey_operations SET request_json = ?, request_version = 2 WHERE id = ?",
-      )
-      .run(
-        JSON.stringify({ action: "future-action" }),
-        interaction.payload.operationId,
+  it.each(["legacy", "recorded"])(
+    "reconciles only exact text and attachments from %s journals",
+    async (journal) => {
+      const attachmentId = "7c1d7259-9c10-4e68-98ef-227fe57aad91";
+      const responses: StubbedFetchResult[] = [
+        identityResponse(),
+        jsonResponse(koreyThread()),
+        jsonResponse(koreyThread()),
+        jsonResponse([{ id: attachmentId, filename: "spec.md" }], 201),
+        new Error("connection reset"),
+        messagePage(),
+      ];
+      const calls = stubFetch(responses);
+      const host = await loadPlugin();
+      storeMapping(host);
+      const pendingResult = host.harness.callAgentTool(
+        "korey_shortcut_change",
+        {
+          action: "create",
+          instruction: "Create one approved Story.",
+          files: ["spec.md"],
+        },
       );
-    const history = await host.harness.callAgentTool(
-      "korey_list_operations",
-      {},
-    );
-    expect(JSON.parse(String(history))).toEqual([
-      expect.objectContaining({
-        operationId: interaction.payload.operationId,
-        action: "unknown",
-        requestVersion: 2,
-      }),
-    ]);
-    responses.push(
-      messagePage([
-        userMessage(
-          `Please investigate ${interaction.payload.operationId}. BB operation reference: ${interaction.payload.operationId}`,
-          "diagnostic-message",
+      const interaction = await waitForApproval(host);
+      approve(host, interaction);
+      await pendingResult;
+
+      const sentBody = JSON.parse(String(calls[4]?.init?.body));
+      // Reconciliation uses the recorded bytes even if a later approval schema
+      // has changed. Historical records must remain inspectable as well.
+      host.bb.storage
+        .database()
+        .prepare(
+          "UPDATE korey_operations SET request_json = ?, request_version = ?, dispatched_text = CASE WHEN ? = 'legacy' THEN NULL ELSE dispatched_text END WHERE id = ?",
+        )
+        .run(
+          JSON.stringify(
+            journal === "legacy"
+              ? { ...interaction.payload, oldApprovalField: true }
+              : { action: "future-action" },
+          ),
+          journal === "legacy" ? 1 : 2,
+          journal,
+          interaction.payload.operationId,
+        );
+      const history = await host.harness.callAgentTool(
+        "korey_list_operations",
+        {},
+      );
+      expect(JSON.parse(String(history))).toEqual([
+        expect.objectContaining({
+          operationId: interaction.payload.operationId,
+          action: journal === "legacy" ? "create" : "unknown",
+          requestVersion: journal === "legacy" ? 1 : 2,
+        }),
+      ]);
+      responses.push(
+        messagePage([
+          userMessage(
+            `Please investigate ${interaction.payload.operationId}. BB operation reference: ${interaction.payload.operationId}`,
+            "diagnostic-message",
+          ),
+        ]),
+      );
+      const diagnostic = await host.harness.callAgentTool(
+        "korey_reconcile_operation",
+        { operationId: interaction.payload.operationId },
+      );
+      expect(JSON.parse(String(diagnostic))).toMatchObject({
+        reconciled: false,
+        status: "reconcile-required",
+      });
+
+      responses.push(messagePage([userMessage(sentBody.text, "missing-file")]));
+      const missingFile = await host.harness.callAgentTool(
+        "korey_reconcile_operation",
+        { operationId: interaction.payload.operationId },
+      );
+      expect(JSON.parse(String(missingFile))).toMatchObject({
+        reconciled: false,
+        status: "reconcile-required",
+      });
+
+      responses.push(
+        messagePage([
+          userMessage(sentBody.text, "write-message-1", [attachmentId]),
+        ]),
+        completeResponse("Created SC-321"),
+      );
+      const reconciled = await host.harness.callAgentTool(
+        "korey_reconcile_operation",
+        { operationId: interaction.payload.operationId },
+      );
+
+      expect(JSON.parse(String(reconciled))).toMatchObject({
+        reconciled: true,
+        status: "korey-complete",
+        koreyMessageId: "write-message-1",
+        response: "Created SC-321",
+      });
+      expect(
+        calls.filter(
+          (call) =>
+            call.url.endsWith("/messages") && call.init?.method === "POST",
         ),
-      ]),
-    );
-    const diagnostic = await host.harness.callAgentTool(
-      "korey_reconcile_operation",
-      { operationId: interaction.payload.operationId },
-    );
-    expect(JSON.parse(String(diagnostic))).toMatchObject({
-      reconciled: false,
-      status: "reconcile-required",
-    });
-
-    responses.push(messagePage([userMessage(sentBody.text, "missing-file")]));
-    const missingFile = await host.harness.callAgentTool(
-      "korey_reconcile_operation",
-      { operationId: interaction.payload.operationId },
-    );
-    expect(JSON.parse(String(missingFile))).toMatchObject({
-      reconciled: false,
-      status: "reconcile-required",
-    });
-
-    responses.push(
-      messagePage([
-        userMessage(sentBody.text, "write-message-1", [attachmentId]),
-      ]),
-      completeResponse("Created SC-321"),
-    );
-    const reconciled = await host.harness.callAgentTool(
-      "korey_reconcile_operation",
-      { operationId: interaction.payload.operationId },
-    );
-
-    expect(JSON.parse(String(reconciled))).toMatchObject({
-      reconciled: true,
-      status: "korey-complete",
-      koreyMessageId: "write-message-1",
-      response: "Created SC-321",
-    });
-    expect(
-      calls.filter(
-        (call) =>
-          call.url.endsWith("/messages") && call.init?.method === "POST",
-      ),
-    ).toHaveLength(1);
-  });
+      ).toHaveLength(1);
+    },
+  );
 
   it("records an explicit message rejection as a definite failure", async () => {
     const calls = stubFetch([
