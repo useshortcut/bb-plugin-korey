@@ -1,7 +1,7 @@
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
-import { shortcutApprovalPayloadSchema } from "./contracts.js";
+import { shortcutRequestSchema } from "./contracts.js";
 import {
   beginMappingCreate,
   createOperation,
@@ -16,9 +16,9 @@ import {
 } from "./data.js";
 
 function request(operationId: string) {
-  return shortcutApprovalPayloadSchema.parse({
+  return shortcutRequestSchema.parse({
     operationId,
-    payloadHash: "a".repeat(64),
+    requestHash: "a".repeat(64),
     bbThreadId: "thread-test",
     action: "create",
     storyId: null,
@@ -31,11 +31,40 @@ function request(operationId: string) {
       mappingGeneration: 0,
     },
     attachments: [],
-    unresolvedOperations: [],
   });
 }
 
 describe("Korey durable state", () => {
+  it.each(["requested", "awaiting-approval", "approved"] as const)(
+    "closes interrupted %s requests on reload without dispatch",
+    (status) => {
+      const db = new Database(":memory:");
+      try {
+        migrations.forEach((migration) => db.exec(migration));
+        const operation = createOperation(db, request("korey-1"));
+        expect(operation).toMatchObject({
+          status: "requested",
+          requestVersion: 2,
+          approvedAt: null,
+        });
+        transitionOperation(db, {
+          id: operation.id,
+          from: "requested",
+          to: status,
+        });
+        recoverInterruptedOperations(db);
+        expect(getOperation(db, operation.id)).toMatchObject({
+          status:
+            status === "awaiting-approval" ? "cancelled" : "definite-failure",
+          koreyMessageId: null,
+          dispatchedText: null,
+        });
+      } finally {
+        db.close();
+      }
+    },
+  );
+
   it("keeps one-to-one links and explains how to move an existing link", () => {
     const db = new Database(":memory:");
     try {
@@ -81,7 +110,7 @@ describe("Korey durable state", () => {
     }
   });
 
-  it("migrates old journals and reads historical requests without today's approval schema", () => {
+  it("migrates old journals and reads historical requests without today's request schema", () => {
     const db = new Database(":memory:");
     try {
       migrations.slice(0, 2).forEach((migration) => db.exec(migration));
@@ -92,7 +121,7 @@ describe("Korey durable state", () => {
         "korey-1",
         "thread-test",
         JSON.stringify(snapshot),
-        snapshot.payloadHash,
+        snapshot.requestHash,
       );
       migrations.slice(2).forEach((migration) => db.exec(migration));
       expect(getOperation(db, "korey-1")).toMatchObject({
@@ -150,7 +179,7 @@ describe("Korey durable state", () => {
         createOperation(db, { ...request(id), bbThreadId: seed.bbThreadId });
         transitionOperation(db, {
           id,
-          from: "awaiting-approval",
+          from: "requested",
           to: seed.status,
           patch: { koreyThreadId: seed.koreyThreadId },
         });
@@ -203,7 +232,7 @@ describe("Korey durable state", () => {
       );
       transitionOperation(db, {
         id: "korey-11111111-1111-4111-8111-111111111111",
-        from: "awaiting-approval",
+        from: "requested",
         to: "approved",
       });
 
@@ -213,7 +242,7 @@ describe("Korey durable state", () => {
       );
       transitionOperation(db, {
         id: "korey-22222222-2222-4222-8222-222222222222",
-        from: "awaiting-approval",
+        from: "requested",
         to: "message-dispatching",
       });
 
@@ -223,7 +252,7 @@ describe("Korey durable state", () => {
       );
       transitionOperation(db, {
         id: "korey-33333333-3333-4333-8333-333333333333",
-        from: "awaiting-approval",
+        from: "requested",
         to: "awaiting-response",
         patch: {
           koreyMessageId: "message-3",

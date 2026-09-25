@@ -3,10 +3,7 @@ import { cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { PluginPendingInteractionProps } from "@get-bb/plugin-sdk/app";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import {
-  OPERATION_RESOLUTION_RENDERER_ID,
-  type ShortcutApprovalPayload,
-} from "./contracts.js";
+import { OPERATION_RESOLUTION_RENDERER_ID } from "./contracts.js";
 
 const app = await loadPluginApp(() => import("./app.js"));
 
@@ -42,7 +39,7 @@ it("shows the resolution note and binds confirmation to its snapshot", async () 
   );
 });
 
-it.each(["shortcut-change-approval", OPERATION_RESOLUTION_RENDERER_ID])(
+it.each([OPERATION_RESOLUTION_RENDERER_ID])(
   "rejects invalid interaction payloads and allows dismissal (%s)",
   async (id) => {
     const registration = app.pendingInteractions.find(
@@ -63,23 +60,14 @@ it.each(["shortcut-change-approval", OPERATION_RESOLUTION_RENDERER_ID])(
   },
 );
 
-function payload(operationId: string): ShortcutApprovalPayload {
+function payload(operationId: string) {
   return {
     operationId,
-    payloadHash: "a".repeat(64),
-    bbThreadId: "thread-test",
-    action: "create",
-    storyId: null,
-    instruction: "Create the approved Story.",
-    koreyOrganization: "example",
-    destination: {
-      kind: "linked-private-thread",
-      koreyThreadId: "korey-thread-1",
-      koreyThreadRevision: "2026-08-21T12:01:00.000Z",
-      mappingGeneration: 1,
-    },
-    attachments: [],
-    unresolvedOperations: [],
+    resolutionHash: "a".repeat(64),
+    status: "reconcile-required",
+    instruction: "Create the requested Story.",
+    koreyThreadId: "korey-thread-1",
+    note: "Inspected Korey and Shortcut.",
   };
 }
 
@@ -92,7 +80,7 @@ function props(
     interaction: {
       id: interactionId,
       threadId: "thread-test",
-      title: "Create Shortcut Story",
+      title: "Resolve Korey operation manually",
       payload: payload(operationId),
       createdAt: 0,
       expiresAt: null,
@@ -102,10 +90,10 @@ function props(
   };
 }
 
-it("enables approval controls for the next interaction after submission", async () => {
+it("enables resolution controls for the next interaction after submission", async () => {
   const registration = app.pendingInteractions[0];
   if (registration === undefined) {
-    throw new Error("Missing Shortcut approval registration");
+    throw new Error("Missing operation resolution registration");
   }
   const submit = vi.fn<PluginPendingInteractionProps["submit"]>(
     async () => undefined,
@@ -117,9 +105,11 @@ it("enables approval controls for the next interaction after submission", async 
   );
   const slot = renderSlot(registration, first);
 
-  fireEvent.click(slot.getByRole("button", { name: "Approve Shortcut write" }));
+  fireEvent.click(
+    slot.getByRole("button", { name: "Confirm manual resolution" }),
+  );
   await waitFor(() => {
-    expect(slot.getByRole("button", { name: "Approving..." })).toBeTruthy();
+    expect(slot.getByRole("button", { name: "Resolving..." })).toBeTruthy();
   });
 
   const Component = registration.component;
@@ -133,10 +123,10 @@ it("enables approval controls for the next interaction after submission", async 
     />,
   );
 
-  const approve = slot.getByRole("button", {
-    name: "Approve Shortcut write",
+  const confirm = slot.getByRole("button", {
+    name: "Confirm manual resolution",
   });
   const cancel = slot.getByRole("button", { name: "Cancel" });
-  expect((approve as HTMLButtonElement).disabled).toBe(false);
+  expect((confirm as HTMLButtonElement).disabled).toBe(false);
   expect((cancel as HTMLButtonElement).disabled).toBe(false);
 });

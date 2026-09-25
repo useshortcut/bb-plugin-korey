@@ -1,10 +1,11 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import type { ShortcutApprovalPayload } from "./contracts.js";
+import type { ShortcutRequest } from "./contracts.js";
 
 type Db = ReturnType<BbPluginApi["storage"]["database"]>;
 
 export const operationStatusSchema = z.enum([
+  "requested",
   "awaiting-approval",
   "cancelled",
   "approved",
@@ -155,8 +156,8 @@ function operationRecord(value: unknown): OperationRecord {
     id: row.id,
     bbThreadId: row.bb_thread_id,
     status: row.status,
-    // Historical approvals are data, not executable requests. Only the write
-    // path validates against the current approval contract.
+    // Historical requests are data, not executable requests. Only the write
+    // path validates against the current request contract.
     request: z
       .record(z.string(), z.unknown())
       .parse(JSON.parse(row.request_json)),
@@ -355,18 +356,18 @@ function getMappingRequired(db: Db, bbThreadId: string): MappingRecord {
 
 export function createOperation(
   db: Db,
-  request: ShortcutApprovalPayload,
+  request: ShortcutRequest,
 ): OperationRecord {
   const now = Date.now();
   db.prepare(
     `INSERT INTO korey_operations (
-       id, bb_thread_id, status, request_json, request_hash, created_at, updated_at
-     ) VALUES (?, ?, 'awaiting-approval', ?, ?, ?, ?)`,
+       id, bb_thread_id, status, request_json, request_hash, created_at, updated_at, request_version
+     ) VALUES (?, ?, 'requested', ?, ?, ?, ?, 2)`,
   ).run(
     request.operationId,
     request.bbThreadId,
     JSON.stringify(request),
-    request.payloadHash,
+    request.requestHash,
     now,
     now,
   );
@@ -533,10 +534,10 @@ export function recoverInterruptedOperations(db: Db): void {
   db.prepare(
     `UPDATE korey_operations
         SET status = 'definite-failure',
-            error = 'The plugin stopped before a Shortcut message was dispatched; request a new approval to try again',
+            error = 'The plugin stopped before a Shortcut message was dispatched; inspect the operation before trying again',
             updated_at = ?
       WHERE status IN (
-        'approved', 'preparing', 'thread-ready',
+        'requested', 'approved', 'preparing', 'thread-ready',
         'attachment-upload-dispatching', 'attachments-uploaded'
       )`,
   ).run(now);

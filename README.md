@@ -36,9 +36,9 @@ can follow up with more context, attach workspace files, and continue the same
 conversation as you change harnesses.
 
 The current version supports research, analysis, and drafts across Korey’s
-connected services, plus Shortcut Story creation and updates with a BB approval
-prompt. Available data and actions depend on the connectors and permissions in
-your Korey workspace. Story approvals use the BB desktop or web app.
+connected services, plus Shortcut Story creation and updates. Requested Story
+changes go straight to Korey. Available data and actions depend on the
+connectors and permissions in your Korey workspace.
 
 ## Get started
 
@@ -77,10 +77,12 @@ bb korey ask "Review this rollout plan against our LaunchDarkly flags" --file pl
 bb korey shortcut create "Create a Story for the bug investigated in this conversation"
 ```
 
-When you ask for a Shortcut Story to be created or updated, the plugin shows the
-request for approval before sending it to Korey. Korey handles the Story through
-its Shortcut connector. You can also link an existing private Korey conversation
-and continue work you started there.
+When you ask for a Shortcut Story to be created or updated, the plugin sends
+your request directly to Korey, which handles it through its Shortcut connector.
+There is no extra approval form. If an earlier operation has an unknown outcome,
+the plugin stops and provides recovery steps before another change is sent.
+You can also link an existing private Korey conversation and continue work you
+started there.
 
 ## Reference
 

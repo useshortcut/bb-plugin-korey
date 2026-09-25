@@ -1,6 +1,5 @@
 import { z } from "zod";
 
-export const SHORTCUT_APPROVAL_RENDERER_ID = "shortcut-change-approval";
 export const OPERATION_RESOLUTION_RENDERER_ID = "operation-resolution";
 
 export const operationResolutionPayloadSchema = z.strictObject({
@@ -28,20 +27,10 @@ export const shortcutAttachmentSummarySchema = z
   })
   .strict();
 
-export const unresolvedShortcutOperationSchema = z
+export const shortcutRequestSchema = z
   .object({
     operationId: z.string().regex(/^korey-[a-f0-9-]+$/u),
-    status: z.enum(["awaiting-response", "reconcile-required"]),
-    action: z.enum(["create", "update", "unknown"]),
-    storyId: z.string().nullable(),
-    createdAt: z.number().int().nonnegative(),
-  })
-  .strict();
-
-export const shortcutApprovalPayloadSchema = z
-  .object({
-    operationId: z.string().regex(/^korey-[a-f0-9-]+$/u),
-    payloadHash: z.string().regex(/^[a-f0-9]{64}$/u),
+    requestHash: z.string().regex(/^[a-f0-9]{64}$/u),
     bbThreadId: z.string().min(1),
     action: z.enum(["create", "update"]),
     storyId: z.string().nullable(),
@@ -56,21 +45,10 @@ export const shortcutApprovalPayloadSchema = z
       })
       .strict(),
     attachments: z.array(shortcutAttachmentSummarySchema).max(5),
-    unresolvedOperations: z.array(unresolvedShortcutOperationSchema),
   })
   .strict();
 
-export const shortcutApprovalResponseSchema = z
-  .object({
-    approved: z.literal(true),
-    operationId: z.string().min(1),
-    payloadHash: z.string().min(1),
-  })
-  .strict();
-
-export type ShortcutApprovalPayload = z.infer<
-  typeof shortcutApprovalPayloadSchema
->;
+export type ShortcutRequest = z.infer<typeof shortcutRequestSchema>;
 export type ShortcutAttachmentSummary = z.infer<
   typeof shortcutAttachmentSummarySchema
 >;

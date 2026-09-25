@@ -42,7 +42,7 @@ export function OperationResolution({
     <div className="space-y-4 text-sm">
       <p>
         Confirm only after inspecting Korey and Shortcut. This closes the local
-        operation and removes its warning from future approvals. It does not
+        operation and allows later Shortcut requests to proceed. It does not
         cancel work in Korey or verify a Shortcut result.
       </p>
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2">

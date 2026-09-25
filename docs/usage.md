@@ -41,12 +41,14 @@ bb korey shortcut create "Create the reviewed bug Story" --file screenshot.png
 bb korey shortcut update SC-123 "Add the approved acceptance criterion"
 ```
 
-The Shortcut command does not accept `--yes`. It pauses and displays a BB-owned
-approval form containing the exact action, Story ID, Korey organization and
-conversation revision, instruction, attachment sizes, attachment SHA-256
-hashes, and any unresolved earlier Shortcut operations. Nothing write-intended
-is sent to Korey unless that form is approved. BB cannot inspect or bind the
-server-side Shortcut connector configuration used by Korey.
+An explicit request to create or update a Story authorizes the change. The
+command sends it directly to Korey without an extra approval form or `--yes`
+flag. Agents should ask for clarification only when the requested change or
+destination is unclear. Korey uses its connector and workspace conventions.
+
+If an earlier operation is unresolved, the plugin stops before sending another
+change and returns the operation ID with recovery steps. Inspect that operation
+before deciding what to do next.
 
 Native tools expose the same capabilities:
 
@@ -65,7 +67,7 @@ Native tools expose the same capabilities:
 ## Operation Recovery
 
 Every Shortcut request has a durable operation ID and SQLite journal. The
-plugin records the immutable approved request, destination, attachment hashes,
+plugin records the immutable request, destination, attachment hashes,
 uploaded attachment IDs, Korey thread ID, and Korey message ID as they become
 available.
 
@@ -91,8 +93,8 @@ bb korey operation reconcile <operation-id>
 ```
 
 Reconciliation never resends the message. An absent history match does not
-prove that Shortcut made no change, so inspect Korey and Shortcut before asking
-for another approval.
+prove that Shortcut made no change, so inspect Korey and Shortcut before requesting
+another change.
 
 After inspecting Korey and Shortcut, close an unresolved operation with a note:
 
@@ -100,11 +102,11 @@ After inspecting Korey and Shortcut, close an unresolved operation with a note:
 bb korey operation resolve <operation-id> "Verified SC-123 contains the requested change"
 ```
 
-BB displays the operation and note for your confirmation. Resolution removes
-the warning from later approvals and preserves the original request, error,
-note, and completion time in the local journal. It does not cancel remote work
-or assert that Korey completed it. A changed operation invalidates the pending
-confirmation. Approval and resolution forms expire after ten minutes.
+BB displays the operation and note for your confirmation. This closeout form is
+reserved for unresolved outcomes. Resolution allows later requests to proceed
+and preserves the original request, error, note, and completion time. It does
+not cancel remote work or verify that Korey completed it. A changed operation
+invalidates the pending confirmation; the form expires after ten minutes.
 
 `manually-resolved` records this user-confirmed closeout, distinct from a
 `korey-complete` response.
@@ -113,7 +115,7 @@ Important operation states:
 
 | State                | Meaning                                                             |
 | -------------------- | ------------------------------------------------------------------- |
-| `awaiting-approval`  | BB is waiting for the user-owned approval form.                     |
+| `requested`          | The user’s request is recorded and preparation is about to start.   |
 | `awaiting-response`  | Korey recorded the message; response polling can resume safely.     |
 | `korey-complete`     | Korey finished the turn; the Shortcut result still requires review. |
 | `definite-failure`   | No Shortcut-intended message was dispatched.                        |
@@ -121,19 +123,17 @@ Important operation states:
 
 ## Safety Model
 
-`korey_shortcut_change` uses a server-managed, single-use interaction instead
-of an agent-supplied confirmation boolean. The approved snapshot is checked
-again after conversation serialization, so changing the linked Korey thread
-or its revision invalidates the approval. Concurrent work for one linked
-conversation is serialized, and first-use mappings are claimed transactionally
-before a remote thread is created. The next approval displays unresolved
-operations from either the current BB thread or the destination Korey
-conversation, including operations from another BB thread before relinking.
-Approval is invalidated if that snapshot changes before dispatch.
+`korey_shortcut_change` acts on the user’s explicit create or update request.
+The plugin records the request, destination, and attachment hashes before
+sending it. It checks conversation readiness, privacy, and revision, serializes
+requests within each BB thread, and claims first-use mappings transactionally.
+If the destination changes during preparation, no Shortcut message is sent.
 
-This protects the normal BB tool and CLI flow; it is not a cryptographic
-authorization boundary against malicious code already running with the user's
-full BB credentials. BB plugins and coding agents are trusted local software.
+Unresolved operations from either the current BB thread or the destination
+Korey conversation block a new write, including after a conversation is relinked
+from another BB thread. The plugin checks again before message dispatch. Resume,
+reconcile, or manually resolve the existing operation instead of submitting a
+replacement whose effect may be duplicated.
 
 Korey's public API has no idempotency key or structured Shortcut mutation
 result. The plugin therefore cannot promise exactly-once Shortcut writes. It
@@ -159,7 +159,7 @@ path aliases or hard links, and files that grow beyond their limit while being
 read.
 
 Korey's current byte limits are enforced before creating a conversation or
-showing approval:
+sending a request:
 
 | Type   | Extensions                               | Per-file limit |
 | ------ | ---------------------------------------- | -------------- |

@@ -7,10 +7,11 @@ import {
 import type { ReadAttachmentResult } from "./attachments.js";
 import {
   operationResolutionPayloadSchema,
-  shortcutApprovalPayloadSchema,
+  shortcutRequestSchema,
 } from "./contracts.js";
 import {
   beginMappingCreate,
+  createOperation,
   getMapping,
   getOperation,
   listUnresolvedOperations,
@@ -183,31 +184,14 @@ async function loadPlugin(
   return host;
 }
 
-async function waitForApproval(host: FakePluginHost) {
-  return vi.waitFor(
-    () => {
-      const pending = host.harness.pendingInteractions[0];
-      if (pending === undefined) {
-        throw new Error("Approval interaction was not created");
-      }
-      return {
-        id: pending.id,
-        payload: shortcutApprovalPayloadSchema.parse(pending.payload),
-      };
-    },
-    { timeout: 1_000, interval: 5 },
-  );
-}
-
-function approve(
-  host: FakePluginHost,
-  interaction: Awaited<ReturnType<typeof waitForApproval>>,
-) {
-  host.harness.submitInteraction(interaction.id, {
-    approved: true,
-    operationId: interaction.payload.operationId,
-    payloadHash: interaction.payload.payloadHash,
-  });
+function recordedRequest(host: FakePluginHost) {
+  const operation = listOperations(
+    host.bb.storage.database(),
+    "thread-test",
+    1,
+  )[0];
+  if (!operation) throw new Error("No recorded Shortcut request");
+  return shortcutRequestSchema.parse(operation.request);
 }
 
 function storeMapping(host: FakePluginHost, koreyThreadId = "korey-thread-1") {
@@ -545,42 +529,194 @@ describe("Korey plugin conversations", () => {
   });
 });
 
-describe("Korey Shortcut approval and recovery", () => {
-  it.each(["timeout", "request-aborted"])(
-    "cancels approval without dispatch when it ends via %s",
-    async (reason) => {
-      vi.useFakeTimers();
-      try {
-        const controller = new AbortController();
-        const calls = stubFetch([identityResponse()]);
-        const host = await loadPlugin();
-        const pending = host.harness.callAgentTool(
-          "korey_shortcut_change",
-          { action: "create", instruction: "Create a Story" },
-          { signal: controller.signal },
-        );
-        const approval = await waitForApproval(host);
-        expect(host.harness.pendingInteractions[0]?.timeoutMs).toBe(
-          10 * 60_000,
-        );
-        if (reason === "timeout")
-          await vi.advanceTimersByTimeAsync(10 * 60_000);
-        else controller.abort();
-        const result = await pending;
-        expect(result).toMatchObject({ isError: true });
-        expect(JSON.stringify(result)).toContain(reason);
-        expect(
-          getOperation(
-            host.bb.storage.database(),
-            approval.payload.operationId,
-          ),
-        ).toMatchObject({ status: "cancelled" });
-        expect(calls.map((call) => call.init?.method)).toEqual(["GET"]);
-      } finally {
-        vi.useRealTimers();
-      }
+describe("Korey Shortcut requests and recovery", () => {
+  it.each(["same-thread", "relinked", "unlinked"])(
+    "blocks a new write until an uncertain %s predecessor is resolved",
+    async (scenario) => {
+      const calls = stubFetch([
+        identityResponse(),
+        jsonResponse(koreyThread()),
+        jsonResponse(koreyThread()),
+        new Error("connection reset"),
+        messagePage(),
+      ]);
+      const host = await loadPlugin();
+      storeMapping(host);
+      const input = { action: "create", instruction: "Create one Story." };
+      const first = await host.harness.callAgentTool(
+        "korey_shortcut_change",
+        input,
+      );
+      expect(first).toMatchObject({ isError: true });
+      const original = recordedRequest(host);
+      if (scenario !== "same-thread")
+        await host.harness.callAgentTool("korey_unlink_thread", {});
+      const target = scenario === "relinked" ? "thread-other" : "thread-test";
+      if (scenario === "relinked")
+        setLinkedMapping(host.bb.storage.database(), target, "korey-thread-1");
+      const result = await host.harness.callAgentTool(
+        "korey_shortcut_change",
+        input,
+        { threadId: target },
+      );
+      expect(result).toMatchObject({ isError: true });
+      expect(JSON.stringify(result)).toContain(original.operationId);
+      expect(JSON.stringify(result)).toContain("This request was not sent");
+      expect(calls).toHaveLength(5);
+      expect(calls.filter((call) => call.init?.method === "POST")).toHaveLength(
+        1,
+      );
+      expect(host.harness.pendingInteractions).toHaveLength(0);
+      expect(
+        listOperations(host.bb.storage.database(), target, 20),
+      ).toHaveLength(scenario === "relinked" ? 0 : 1);
     },
   );
+
+  it("rechecks unresolved operations after preparing attachments", async () => {
+    const host = await loadPlugin();
+    storeMapping(host);
+    const db = host.bb.storage.database();
+    const predecessorId = "korey-11111111-1111-4111-8111-111111111111";
+    createOperation(db, {
+      operationId: predecessorId,
+      requestHash: "a".repeat(64),
+      bbThreadId: "previous-thread",
+      action: "create",
+      storyId: null,
+      instruction: "Create the previous Story.",
+      koreyOrganization: "example",
+      attachments: [],
+      destination: {
+        kind: "linked-private-thread",
+        koreyThreadId: "korey-thread-1",
+        koreyThreadRevision: "revision",
+        mappingGeneration: 1,
+      },
+    });
+    transitionOperation(db, {
+      id: predecessorId,
+      from: "requested",
+      to: "message-dispatching",
+      patch: { koreyThreadId: "korey-thread-1" },
+    });
+    const calls = stubFetch([
+      identityResponse(),
+      jsonResponse(koreyThread()),
+      jsonResponse(koreyThread()),
+      () => {
+        transitionOperation(db, {
+          id: predecessorId,
+          from: "message-dispatching",
+          to: "reconcile-required",
+        });
+        return jsonResponse(
+          [{ id: "7c1d7259-9c10-4e68-98ef-227fe57aad91", filename: "spec.md" }],
+          201,
+        );
+      },
+    ]);
+    const result = await host.harness.callAgentTool("korey_shortcut_change", {
+      action: "create",
+      instruction: "Create a Story.",
+      files: ["spec.md"],
+    });
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain(predecessorId);
+    expect(listOperations(db, "thread-test", 1)[0]).toMatchObject({
+      status: "definite-failure",
+      koreyMessageId: null,
+    });
+    expect(
+      calls
+        .filter((call) => call.init?.method === "POST")
+        .map((call) => call.url),
+    ).toEqual([
+      "https://api.korey.ai/api/v1/threads/korey-thread-1/attachments",
+    ]);
+  });
+
+  it("serializes simultaneous requested writes and claims only one first-use mapping", async () => {
+    const calls = stubFetch([
+      identityResponse(),
+      jsonResponse({ thread_id: "korey-thread-1", message_id: null }, 201),
+      jsonResponse(koreyThread()),
+      jsonResponse({ message_id: "first" }, 201),
+      completeResponse("Created SC-1"),
+      identityResponse(),
+      jsonResponse(koreyThread()),
+      jsonResponse(koreyThread()),
+      jsonResponse({ message_id: "second" }, 201),
+      completeResponse("Created SC-2"),
+    ]);
+    const host = await loadPlugin();
+    const results = await Promise.all(
+      ["First Story", "Second Story"].map((instruction) =>
+        host.harness.callAgentTool("korey_shortcut_change", {
+          action: "create",
+          instruction,
+        }),
+      ),
+    );
+    expect(results.map((result) => JSON.parse(String(result)).status)).toEqual([
+      "korey-complete",
+      "korey-complete",
+    ]);
+    expect(
+      calls.filter(
+        (call) => call.init?.method === "POST" && call.url.endsWith("/threads"),
+      ),
+    ).toHaveLength(1);
+    expect(
+      calls.filter(
+        (call) =>
+          call.init?.method === "POST" && call.url.endsWith("/messages"),
+      ),
+    ).toHaveLength(2);
+    expect(host.harness.pendingInteractions).toHaveLength(0);
+  });
+
+  it("stops when the destination changes during preparation", async () => {
+    const host = await loadPlugin();
+    storeMapping(host);
+    const calls = stubFetch([
+      identityResponse(),
+      () => {
+        setLinkedMapping(
+          host.bb.storage.database(),
+          "thread-test",
+          "korey-thread-2",
+        );
+        return jsonResponse(koreyThread());
+      },
+    ]);
+    const result = await host.harness.callAgentTool("korey_shortcut_change", {
+      action: "create",
+      instruction: "Create a Story.",
+    });
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain("destination changed");
+    expect(calls.map((call) => call.init?.method)).toEqual(["GET", "GET"]);
+    expect(
+      listOperations(host.bb.storage.database(), "thread-test", 1),
+    ).toEqual([]);
+  });
+
+  it("does not start a cancelled request", async () => {
+    const host = await loadPlugin();
+    const calls = stubFetch([]);
+    const signal = AbortSignal.abort();
+    const result = await host.harness.callAgentTool(
+      "korey_shortcut_change",
+      { action: "create", instruction: "Create a Story." },
+      { signal },
+    );
+    expect(result).toMatchObject({ isError: true });
+    expect(calls).toEqual([]);
+    expect(
+      listOperations(host.bb.storage.database(), "thread-test", 1),
+    ).toEqual([]);
+  });
 
   it.each(["dispatch", "polling"])(
     "preserves recoverable state when cancelled during %s",
@@ -606,11 +742,11 @@ describe("Korey Shortcut approval and recovery", () => {
         { action: "create", instruction: "Create once" },
         { signal: controller.signal },
       );
-      const approval = await waitForApproval(host);
-      approve(host, approval);
-      expect(await pending).toMatchObject({ isError: true });
+      const changeResult = await pending;
+      const request = recordedRequest(host);
+      expect(changeResult).toMatchObject({ isError: true });
       expect(
-        getOperation(host.bb.storage.database(), approval.payload.operationId),
+        getOperation(host.bb.storage.database(), request.operationId),
       ).toMatchObject({
         status:
           stage === "dispatch" ? "reconcile-required" : "awaiting-response",
@@ -618,12 +754,11 @@ describe("Korey Shortcut approval and recovery", () => {
       if (stage === "polling") {
         responses.push(completeResponse("Created SC-123"));
         await host.harness.callAgentTool("korey_resume_operation", {
-          operationId: approval.payload.operationId,
+          operationId: request.operationId,
         });
       }
       expect(
-        getOperation(host.bb.storage.database(), approval.payload.operationId)
-          ?.status,
+        getOperation(host.bb.storage.database(), request.operationId)?.status,
       ).toBe(stage === "dispatch" ? "reconcile-required" : "korey-complete");
       expect(calls.filter((call) => call.init?.method === "POST")).toHaveLength(
         1,
@@ -631,7 +766,7 @@ describe("Korey Shortcut approval and recovery", () => {
     },
   );
 
-  it("normalizes an update Story ID and sends only the approved update instruction", async () => {
+  it("normalizes an update Story ID and sends the requested update without confirmation", async () => {
     const calls = stubFetch([
       identityResponse(),
       jsonResponse(koreyThread()),
@@ -647,15 +782,15 @@ describe("Korey Shortcut approval and recovery", () => {
       instruction: " Add the reviewed criterion. ",
       files: [],
     });
-    const approval = await waitForApproval(host);
-    expect(approval.payload).toMatchObject({
+    const changeResult = await pending;
+    const request = recordedRequest(host);
+    expect(request).toMatchObject({
       action: "update",
       storyId: "sc-123",
       instruction: "Add the reviewed criterion.",
       attachments: [],
     });
-    approve(host, approval);
-    expect(JSON.parse(String(await pending))).toMatchObject({
+    expect(JSON.parse(String(changeResult))).toMatchObject({
       status: "korey-complete",
     });
     const text: string = JSON.parse(String(calls[3]?.init?.body)).text;
@@ -666,7 +801,7 @@ describe("Korey Shortcut approval and recovery", () => {
   });
 
   it.each(["active", "waiting", "error", "interrupted"])(
-    "rejects a %s conversation before opening approval",
+    "rejects a %s conversation before dispatch",
     async (state) => {
       const calls = stubFetch([
         identityResponse(),
@@ -679,7 +814,7 @@ describe("Korey Shortcut approval and recovery", () => {
         instruction: "Create a Story",
       });
       expect(result).toMatchObject({ isError: true });
-      expect(JSON.stringify(result)).toContain("before requesting approval");
+      expect(JSON.stringify(result)).toContain("before sending the request");
       expect(host.harness.pendingInteractions).toHaveLength(0);
       expect(
         listOperations(host.bb.storage.database(), "thread-test", 20),
@@ -704,11 +839,11 @@ describe("Korey Shortcut approval and recovery", () => {
         action: "create",
         instruction: "Create one Story.",
       });
-      const approval = await waitForApproval(host);
-      approve(host, approval);
       await pending;
+      const request = recordedRequest(host);
+
       const db = host.bb.storage.database();
-      const before = getOperation(db, approval.payload.operationId)!;
+      const before = getOperation(db, request.operationId)!;
       expect(before.status).toBe("reconcile-required");
       const resolving = host.harness.runCli([
         "operation",
@@ -827,8 +962,6 @@ describe("Korey Shortcut approval and recovery", () => {
             action: "create",
             instruction: "Create one approved Story.",
           });
-          const interaction = await waitForApproval(host);
-          approve(host, interaction);
           const result = await pending;
 
           expect(result).toMatchObject({ isError: true });
@@ -867,10 +1000,9 @@ describe("Korey Shortcut approval and recovery", () => {
         action: "create",
         instruction: "Create one approved Story.",
       });
-      const interaction = await waitForApproval(host);
-      approve(host, interaction);
+      const changeResult = await pending;
 
-      expect(await pending).toMatchObject({ isError: true });
+      expect(changeResult).toMatchObject({ isError: true });
       expect(
         listOperations(host.bb.storage.database(), "thread-test", 10)[0],
       ).toMatchObject({
@@ -880,183 +1012,7 @@ describe("Korey Shortcut approval and recovery", () => {
     },
   );
 
-  it.each([
-    ["unchanged", "thread-a", "reconcile-required"],
-    ["before-approval", "thread-b", "cancelled"],
-    ["during-preparation", "thread-b", "definite-failure"],
-  ])(
-    "includes and binds unresolved writes after relinking from A to B (%s)",
-    async (predecessorChange, operationThreadId, expectedStatus) => {
-      const responses: StubbedFetchResult[] = [
-        identityResponse(),
-        jsonResponse(koreyThread()),
-        jsonResponse(koreyThread()),
-        new Error("connection reset"),
-        messagePage(),
-      ];
-      const calls = stubFetch(responses);
-      const host = await loadPlugin();
-      setLinkedMapping(
-        host.bb.storage.database(),
-        "thread-a",
-        "korey-thread-1",
-      );
-      const input = {
-        action: "create",
-        instruction: "Create one approved Story.",
-      };
-      const first = host.harness.callAgentTool("korey_shortcut_change", input, {
-        threadId: "thread-a",
-      });
-      const firstInteraction = await waitForApproval(host);
-      approve(host, firstInteraction);
-      expect(await first).toMatchObject({ isError: true });
-
-      await host.harness.callAgentTool(
-        "korey_unlink_thread",
-        {},
-        { threadId: "thread-a" },
-      );
-      responses.push(jsonResponse(koreyThread()));
-      const linked = await host.harness.callAgentTool(
-        "korey_link_thread",
-        { koreyThreadId: "korey-thread-1" },
-        { threadId: "thread-b" },
-      );
-      expect(linked).toBeTypeOf("string");
-      responses.push(identityResponse(), jsonResponse(koreyThread()));
-      const second = host.harness.callAgentTool(
-        "korey_shortcut_change",
-        input,
-        { threadId: "thread-b" },
-      );
-      const secondInteraction = await waitForApproval(host);
-      const unresolved = secondInteraction.payload.unresolvedOperations;
-
-      const changePredecessor = () => {
-        transitionOperation(host.bb.storage.database(), {
-          id: firstInteraction.payload.operationId,
-          from: "reconcile-required",
-          to: "awaiting-response",
-          patch: { koreyMessageId: "reconciled-message" },
-        });
-      };
-      if (predecessorChange === "before-approval") {
-        changePredecessor();
-      }
-      responses.push(
-        () => {
-          if (predecessorChange === "during-preparation") changePredecessor();
-          return jsonResponse(koreyThread());
-        },
-        jsonResponse({ message_id: "write-message-2" }, 201),
-        completeResponse("Created SC-999"),
-      );
-      approve(host, secondInteraction);
-      const result = await second;
-
-      expect(unresolved).toEqual([
-        {
-          operationId: firstInteraction.payload.operationId,
-          status: "reconcile-required",
-          action: "create",
-          storyId: null,
-          createdAt: expect.any(Number),
-        },
-      ]);
-      expect(
-        typeof result === "string" ? JSON.parse(result) : result,
-      ).toMatchObject(
-        predecessorChange === "unchanged"
-          ? { status: "korey-complete" }
-          : { isError: true },
-      );
-      expect(JSON.stringify(result)).toContain(
-        predecessorChange === "unchanged"
-          ? "korey-complete"
-          : "unresolved operation state changed",
-      );
-      expect(
-        listOperations(host.bb.storage.database(), operationThreadId, 10)[0],
-      ).toMatchObject({ status: expectedStatus });
-      expect(calls.filter((call) => call.init?.method === "POST")).toHaveLength(
-        predecessorChange === "unchanged" ? 2 : 1,
-      );
-    },
-  );
-
-  it("makes no write-intended request when the user cancels approval", async () => {
-    const calls = stubFetch([identityResponse()]);
-    const host = await loadPlugin();
-    const pendingResult = host.harness.callAgentTool("korey_shortcut_change", {
-      action: "create",
-      instruction: "Create a Story from this thread.",
-    });
-    const interaction = await waitForApproval(host);
-
-    expect(interaction.payload).toMatchObject({
-      action: "create",
-      storyId: null,
-      instruction: "Create a Story from this thread.",
-      koreyOrganization: "example",
-      destination: { kind: "new-private-thread" },
-    });
-    expect(calls).toHaveLength(1);
-    host.harness.cancelInteraction(interaction.id);
-    const result = await pendingResult;
-
-    expect(result).toMatchObject({ isError: true });
-    expect(JSON.stringify(result)).toContain("approval was cancelled");
-    expect(calls).toHaveLength(1);
-    expect(
-      listOperations(host.bb.storage.database(), "thread-test", 10)[0],
-    ).toMatchObject({ status: "cancelled" });
-  });
-
-  it("rejects an approval response that is not bound to the request", async () => {
-    const calls = stubFetch([identityResponse()]);
-    const host = await loadPlugin();
-    const pendingResult = host.harness.callAgentTool("korey_shortcut_change", {
-      action: "create",
-      instruction: "Create a Story from this thread.",
-    });
-    const interaction = await waitForApproval(host);
-    host.harness.submitInteraction(interaction.id, {
-      approved: true,
-      operationId: interaction.payload.operationId,
-      payloadHash: "b".repeat(64),
-    });
-
-    const result = await pendingResult;
-    expect(result).toMatchObject({ isError: true });
-    expect(JSON.stringify(result)).toContain("did not match the request");
-    expect(calls).toHaveLength(1);
-  });
-
-  it("binds approval to the exact destination and rejects a changed link", async () => {
-    const calls = stubFetch([identityResponse(), jsonResponse(koreyThread())]);
-    const host = await loadPlugin();
-    storeMapping(host);
-    const pendingResult = host.harness.callAgentTool("korey_shortcut_change", {
-      action: "update",
-      storyId: "123",
-      instruction: "Add the approved acceptance criterion.",
-    });
-    const interaction = await waitForApproval(host);
-    setLinkedMapping(
-      host.bb.storage.database(),
-      "thread-test",
-      "korey-thread-2",
-    );
-    approve(host, interaction);
-
-    const result = await pendingResult;
-    expect(result).toMatchObject({ isError: true });
-    expect(JSON.stringify(result)).toContain("destination changed");
-    expect(calls).toHaveLength(2);
-  });
-
-  it("rejects an approval when the Korey conversation revision changed", async () => {
+  it("stops before dispatch when the Korey conversation revision changes", async () => {
     const calls = stubFetch([
       identityResponse(),
       jsonResponse(koreyThread()),
@@ -1070,9 +1026,6 @@ describe("Korey Shortcut approval and recovery", () => {
       action: "create",
       instruction: "Create the approved Story.",
     });
-    const interaction = await waitForApproval(host);
-    approve(host, interaction);
-
     const result = await pendingResult;
 
     expect(result).toMatchObject({ isError: true });
@@ -1086,7 +1039,7 @@ describe("Korey Shortcut approval and recovery", () => {
   });
 
   it.each([false, true])(
-    "completes one approved create, including additive API changes (%s)",
+    "completes one requested create without confirmation, including additive API changes (%s)",
     async (additive) => {
       const calls = stubFetch([
         identityResponse(),
@@ -1119,26 +1072,32 @@ describe("Korey Shortcut approval and recovery", () => {
           instruction: "Create the approved Story.",
         },
       );
-      const interaction = await waitForApproval(host);
-      approve(host, interaction);
-
       const result = await pendingResult;
+      const request = recordedRequest(host);
+
       expect(result).toBeTypeOf("string");
       expect(JSON.parse(String(result))).toMatchObject({
-        operationId: interaction.payload.operationId,
+        operationId: request.operationId,
         status: "korey-complete",
         response: expect.stringContaining("Created SC-123"),
+        approvedAt: null,
+        requestVersion: 2,
       });
+      expect(host.harness.pendingInteractions).toHaveLength(0);
       const sentBody = JSON.parse(String(calls[3]?.init?.body));
       expect(sentBody.text).toContain(
-        `BB operation reference: ${interaction.payload.operationId}`,
+        `BB operation reference: ${request.operationId}`,
       );
       expect(sentBody.text).toContain("Create exactly one Shortcut Story");
+      expect(sentBody.text).toContain(
+        "The user requested this Shortcut change from BB.",
+      );
+      expect(sentBody.text).not.toContain("confirmation UI");
       expect(calls).toHaveLength(5);
     },
   );
 
-  it("claims a new mapping with the approved operation ID", async () => {
+  it("claims a new mapping with the recorded operation ID", async () => {
     const calls = stubFetch([
       identityResponse(),
       jsonResponse({ thread_id: "korey-thread-1", message_id: null }, 201),
@@ -1151,10 +1110,8 @@ describe("Korey Shortcut approval and recovery", () => {
       action: "create",
       instruction: "Create the approved Story in a new conversation.",
     });
-    const interaction = await waitForApproval(host);
-    approve(host, interaction);
-
     const result = await pendingResult;
+    const request = recordedRequest(host);
 
     expect(result).toBeTypeOf("string");
     expect(JSON.parse(String(result))).toMatchObject({
@@ -1162,11 +1119,11 @@ describe("Korey Shortcut approval and recovery", () => {
       koreyThreadId: "korey-thread-1",
     });
     expect(JSON.parse(String(calls[1]?.init?.body)).name).toContain(
-      `[bb-korey:${interaction.payload.operationId}]`,
+      `[bb-korey:${request.operationId}]`,
     );
     expect(getMapping(host.bb.storage.database(), "thread-test")).toMatchObject(
       {
-        marker: interaction.payload.operationId,
+        marker: request.operationId,
         generation: 1,
         state: "ready",
       },
@@ -1183,9 +1140,6 @@ describe("Korey Shortcut approval and recovery", () => {
       action: "create",
       instruction: "Create the approved Story in a new conversation.",
     });
-    const interaction = await waitForApproval(host);
-    approve(host, interaction);
-
     const result = await pendingResult;
 
     expect(result).toMatchObject({ isError: true });
@@ -1215,10 +1169,9 @@ describe("Korey Shortcut approval and recovery", () => {
       action: "create",
       instruction: "Create one approved Story.",
     });
-    const interaction = await waitForApproval(host);
-    approve(host, interaction);
-
     const result = await pendingResult;
+    const request = recordedRequest(host);
+
     expect(result).toMatchObject({ isError: true });
     expect(JSON.stringify(result)).toContain("unknown Shortcut outcome");
     expect(
@@ -1233,7 +1186,7 @@ describe("Korey Shortcut approval and recovery", () => {
       10,
     )[0];
     expect(operation).toMatchObject({
-      id: interaction.payload.operationId,
+      id: request.operationId,
       status: "reconcile-required",
       koreyMessageId: null,
     });
@@ -1262,11 +1215,16 @@ describe("Korey Shortcut approval and recovery", () => {
           files: ["spec.md"],
         },
       );
-      const interaction = await waitForApproval(host);
-      approve(host, interaction);
       await pendingResult;
+      const request = recordedRequest(host);
 
       const sentBody = JSON.parse(String(calls[4]?.init?.body));
+      if (journal === "legacy") {
+        sentBody.text = sentBody.text.replace(
+          "The user requested this Shortcut change from BB.",
+          "The user approved this external write through bb's confirmation UI.",
+        );
+      }
       // Reconciliation uses the recorded bytes even if a later approval schema
       // has changed. Historical records must remain inspectable as well.
       host.bb.storage
@@ -1277,12 +1235,12 @@ describe("Korey Shortcut approval and recovery", () => {
         .run(
           JSON.stringify(
             journal === "legacy"
-              ? { ...interaction.payload, oldApprovalField: true }
+              ? { ...request, oldApprovalField: true }
               : { action: "future-action" },
           ),
           journal === "legacy" ? 1 : 2,
           journal,
-          interaction.payload.operationId,
+          request.operationId,
         );
       const history = await host.harness.callAgentTool(
         "korey_list_operations",
@@ -1290,7 +1248,7 @@ describe("Korey Shortcut approval and recovery", () => {
       );
       expect(JSON.parse(String(history))).toEqual([
         expect.objectContaining({
-          operationId: interaction.payload.operationId,
+          operationId: request.operationId,
           action: journal === "legacy" ? "create" : "unknown",
           requestVersion: journal === "legacy" ? 1 : 2,
         }),
@@ -1298,14 +1256,14 @@ describe("Korey Shortcut approval and recovery", () => {
       responses.push(
         messagePage([
           userMessage(
-            `Please investigate ${interaction.payload.operationId}. BB operation reference: ${interaction.payload.operationId}`,
+            `Please investigate ${request.operationId}. BB operation reference: ${request.operationId}`,
             "diagnostic-message",
           ),
         ]),
       );
       const diagnostic = await host.harness.callAgentTool(
         "korey_reconcile_operation",
-        { operationId: interaction.payload.operationId },
+        { operationId: request.operationId },
       );
       expect(JSON.parse(String(diagnostic))).toMatchObject({
         reconciled: false,
@@ -1315,7 +1273,7 @@ describe("Korey Shortcut approval and recovery", () => {
       responses.push(messagePage([userMessage(sentBody.text, "missing-file")]));
       const missingFile = await host.harness.callAgentTool(
         "korey_reconcile_operation",
-        { operationId: interaction.payload.operationId },
+        { operationId: request.operationId },
       );
       expect(JSON.parse(String(missingFile))).toMatchObject({
         reconciled: false,
@@ -1330,7 +1288,7 @@ describe("Korey Shortcut approval and recovery", () => {
       );
       const reconciled = await host.harness.callAgentTool(
         "korey_reconcile_operation",
-        { operationId: interaction.payload.operationId },
+        { operationId: request.operationId },
       );
 
       expect(JSON.parse(String(reconciled))).toMatchObject({
@@ -1361,9 +1319,6 @@ describe("Korey Shortcut approval and recovery", () => {
       action: "create",
       instruction: "Create one approved Story.",
     });
-    const interaction = await waitForApproval(host);
-    approve(host, interaction);
-
     const result = await pendingResult;
 
     expect(result).toMatchObject({ isError: true });
@@ -1372,62 +1327,6 @@ describe("Korey Shortcut approval and recovery", () => {
       listOperations(host.bb.storage.database(), "thread-test", 10)[0],
     ).toMatchObject({ status: "definite-failure" });
     expect(calls).toHaveLength(4);
-  });
-
-  it("discloses an unresolved predecessor in a later approval", async () => {
-    const responses: StubbedFetchResult[] = [
-      identityResponse(),
-      jsonResponse(koreyThread()),
-      jsonResponse(koreyThread()),
-      new Error("connection reset"),
-      messagePage(),
-    ];
-    const calls = stubFetch(responses);
-    const host = await loadPlugin();
-    storeMapping(host);
-    const firstResult = host.harness.callAgentTool("korey_shortcut_change", {
-      action: "create",
-      instruction: "Create the first approved Story.",
-    });
-    const firstInteraction = await waitForApproval(host);
-    approve(host, firstInteraction);
-    await firstResult;
-
-    responses.push(
-      identityResponse(),
-      jsonResponse(koreyThread()),
-      jsonResponse(koreyThread()),
-      jsonResponse({ message_id: "write-message-2" }, 201),
-      completeResponse("Created SC-999"),
-    );
-    const secondResult = host.harness.callAgentTool("korey_shortcut_change", {
-      action: "create",
-      instruction: "Create the second approved Story.",
-    });
-    const secondInteraction = await waitForApproval(host);
-
-    expect(secondInteraction.payload.unresolvedOperations).toEqual([
-      {
-        operationId: firstInteraction.payload.operationId,
-        status: "reconcile-required",
-        action: "create",
-        storyId: null,
-        createdAt: expect.any(Number),
-      },
-    ]);
-    approve(host, secondInteraction);
-    const result = await secondResult;
-
-    expect(JSON.parse(String(result))).toMatchObject({
-      status: "korey-complete",
-      response: "Created SC-999",
-    });
-    expect(
-      calls.filter(
-        (call) =>
-          call.url.endsWith("/messages") && call.init?.method === "POST",
-      ),
-    ).toHaveLength(2);
   });
 
   it("resumes polling by recorded message ID without resending", async () => {
@@ -1448,9 +1347,8 @@ describe("Korey Shortcut approval and recovery", () => {
       action: "create",
       instruction: "Create one approved Story.",
     });
-    const interaction = await waitForApproval(host);
-    approve(host, interaction);
     const failed = await pendingResult;
+    const request = recordedRequest(host);
 
     expect(failed).toMatchObject({ isError: true });
     expect(
@@ -1461,7 +1359,7 @@ describe("Korey Shortcut approval and recovery", () => {
     });
     responses.push(completeResponse("Created SC-456"));
     const resumed = await host.harness.callAgentTool("korey_resume_operation", {
-      operationId: interaction.payload.operationId,
+      operationId: request.operationId,
     });
 
     expect(JSON.parse(String(resumed))).toMatchObject({
@@ -1473,7 +1371,7 @@ describe("Korey Shortcut approval and recovery", () => {
     );
   });
 
-  it("binds file hashes before upload and supports the CLI approval flow", async () => {
+  it("binds file hashes before upload and supports direct CLI requests", async () => {
     const attachmentId = "7c1d7259-9c10-4e68-98ef-227fe57aad91";
     const calls = stubFetch([
       identityResponse(),
@@ -1494,9 +1392,10 @@ describe("Korey Shortcut approval and recovery", () => {
       "--bb-thread",
       "thread-test",
     ]);
-    const interaction = await waitForApproval(host);
+    const result = await pendingResult;
+    const request = recordedRequest(host);
 
-    expect(interaction.payload.attachments).toEqual([
+    expect(request.attachments).toEqual([
       {
         sourcePath: "spec.md",
         filename: "spec.md",
@@ -1506,9 +1405,6 @@ describe("Korey Shortcut approval and recovery", () => {
           "dc151d18db61e5c1e726bd0a8889b99788054a6061fe2566bef3a744857c19e6",
       },
     ]);
-    expect(calls).toHaveLength(2);
-    approve(host, interaction);
-    const result = await pendingResult;
 
     expect(result.exitCode).toBe(0);
     expect(calls[3]?.url).toBe(
@@ -1539,7 +1435,7 @@ describe("Korey Shortcut approval and recovery", () => {
   });
 });
 
-it("registers consultation, approval, and operation recovery surfaces", async () => {
+it("registers consultation, direct writes, and operation recovery surfaces", async () => {
   stubFetch([identityResponse()]);
   const host = await loadPlugin();
 

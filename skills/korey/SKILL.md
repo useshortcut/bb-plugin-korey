@@ -22,15 +22,15 @@ not a technical connector permission boundary. The current BB thread gets a
 private Korey conversation on its first request if no conversation is linked.
 
 Use `korey_shortcut_change` when the user asks Korey to create or update a Shortcut
-Story. Give Korey the requested outcome and supporting context so it can prepare
-the Story through its connector. Call only for the exact create or update the
-user requested. The tool has no confirmation argument: it displays a single-use
-BB approval bound to the action, destination, instruction, and file hashes before
-sending the request. The approval also shows earlier unresolved Shortcut
-operations; inspect them before a later write.
+Story. Give Korey the requested outcome and supporting context. The user’s
+explicit request authorizes that create or update; send it without requesting
+a second confirmation. Ask for clarification only if the intended change or
+destination is unclear. Korey handles the Story through its connector and
+workspace conventions.
 
-This version provides an approved write flow for Shortcut Stories. Requests to
-modify other connected services are not supported by the plugin.
+The plugin stops a new write if an earlier operation is unresolved. Follow the
+recovery steps below before continuing. Writes to other connected services are
+not supported by this plugin.
 
 ## Continue a conversation
 
@@ -52,12 +52,14 @@ traversal, and files outside the workspace are rejected before Korey activity.
 If consultation dispatch has an unknown outcome and no exact history match is
 visible, inspect the linked conversation and do not resend automatically.
 
-Never call `korey_shortcut_change` again to retry a failed or unresolved
-operation. Use `korey_get_operation` first. Use `korey_resume_operation` only
+Never call `korey_shortcut_change` again to retry an operation with an unknown
+outcome. Use `korey_get_operation` first. Use `korey_resume_operation` only
 when its recorded state is `awaiting-response`; this resumes safe polling.
 Use `korey_reconcile_operation` for `reconcile-required`; it reads Korey
 history and never resends the request. If reconciliation finds no message,
-inspect Korey and Shortcut manually.
+inspect Korey and Shortcut manually and ask the user how to proceed. A
+`definite-failure` means no Shortcut message was accepted; resolve the reported
+problem before retrying the user’s request.
 
 For equivalent CLI commands, use `bb korey --help`.
 

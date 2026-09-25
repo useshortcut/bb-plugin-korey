@@ -38,7 +38,7 @@ a managed Git install, without relying on development dependencies or code
 generation during installation. It does not publish or deploy anything.
 
 The development SDK is pinned to 0.5.9 for BB 0.43.4. Build checks do not
-validate live approval forms, host RPC, or other experimental runtime surfaces
+validate live resolution forms, host RPC, or other experimental runtime surfaces
 on BB 0.40.0. The test suite exercises the SDK 0.5.9 backend and UI harnesses;
 live compatibility with another BB version needs a separate smoke test.
 macOS descriptor validation runs with mocked `lsof` output on Linux; CI does
@@ -101,7 +101,7 @@ Generation preserves OpenAPI's default of allowing additional properties when
 `additionalProperties` is omitted. Explicitly closed schemas stay strict in the
 generated file. The client derives tolerant response schemas from that file:
 it ignores extra fields and displays unknown content blocks as placeholders
-with Korey links. Known required fields remain validated. Request and approval
+with Korey links. Known required fields remain validated. New request and resolution
 schemas stay strict.
 
 `check:openapi` compares generated code with the pinned local spec. It does not
@@ -114,9 +114,13 @@ or `422`; those responses remain uncertain until inspected. A status code alone
 does not establish that a write had no effect. Response polling uses bounded
 backoff for transient network errors, `429`, and `5xx`, and honors `Retry-After`.
 
-Journals retain versioned approval snapshots and the exact dispatched text.
-Reading history does not validate it against the current approval schema;
+Journals retain versioned request snapshots and the exact dispatched text.
+Reading history does not validate it against the current request schema;
 reconciliation uses recorded text, with a version 1 fallback for older journals.
+New operations use request version 2 and begin in `requested`; they do not
+record an approval timestamp. Version 1 journals retain their original prompts
+and approval history. Pending approval rows from older plugin versions are
+cancelled on reload and are never dispatched automatically.
 Unresolved operations can be closed locally through the confirmed
 `operation resolve` flow described in [usage](usage.md).
 

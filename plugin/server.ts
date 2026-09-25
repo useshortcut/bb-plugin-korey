@@ -11,10 +11,8 @@ import {
   OPERATION_RESOLUTION_RENDERER_ID,
   operationResolutionPayloadSchema,
   operationResolutionResponseSchema,
-  SHORTCUT_APPROVAL_RENDERER_ID,
-  shortcutApprovalPayloadSchema,
-  shortcutApprovalResponseSchema,
-  type ShortcutApprovalPayload,
+  shortcutRequestSchema,
+  type ShortcutRequest,
   type ShortcutAttachmentSummary,
 } from "./contracts.js";
 import {
@@ -93,7 +91,8 @@ const CLI_COMMANDS = [
   },
   {
     name: "shortcut",
-    summary: "Ask Korey to create or update a Shortcut Story with approval",
+    summary:
+      "Ask Korey to create or update a Shortcut Story at the user's request",
     usage: [
       "bb korey shortcut create <instruction...> [--file <path> ...] [--bb-thread <id>] [--json]",
       "bb korey shortcut update <story-id> <instruction...> [--file <path> ...] [--bb-thread <id>] [--json]",
@@ -120,7 +119,7 @@ const shortcutChangeInputSchema = z
     files: filePathsSchema
       .optional()
       .describe(
-        "Files to bind to the approval and send with the Shortcut request. Paths are relative to this thread's workspace. Up to 5 files.",
+        "Files to send with the Shortcut request. Paths are relative to this thread's workspace. Up to 5 files.",
       ),
   })
   .strict()
@@ -213,7 +212,7 @@ function boundedText(text: string): { text: string; truncated: boolean } {
   };
 }
 
-// Keep history readable across approval schema versions. Missing future fields
+// Keep history readable across request schema versions. Missing future fields
 // are shown as unknown; this projection is never used to authorize a write.
 const storedRequestSummarySchema = z.object({
   action: z.enum(["create", "update", "unknown"]).catch("unknown"),
@@ -249,32 +248,6 @@ function operationView(operation: OperationRecord) {
         ? null
         : new Date(operation.completedAt).toISOString(),
   };
-}
-
-function unresolvedOperationSummaries(
-  db: ReturnType<BbPluginApi["storage"]["database"]>,
-  bbThreadId: string,
-  koreyThreadId: string | null,
-): ShortcutApprovalPayload["unresolvedOperations"] {
-  return listUnresolvedOperations(db, bbThreadId, koreyThreadId).map(
-    (operation) => {
-      if (
-        operation.status !== "awaiting-response" &&
-        operation.status !== "reconcile-required"
-      ) {
-        throw new Error(
-          `Unexpected unresolved operation status ${operation.status}`,
-        );
-      }
-      return {
-        operationId: operation.id,
-        status: operation.status,
-        action: storedRequestSummarySchema.parse(operation.request).action,
-        storyId: storedRequestSummarySchema.parse(operation.request).storyId,
-        createdAt: operation.createdAt,
-      };
-    },
-  );
 }
 
 function parseCommonCliArgs(argv: string[]) {
@@ -548,7 +521,7 @@ export default async function plugin(bb: BbPluginApi) {
               mapping.generation === newMappingClaim.previousGeneration + 1;
       if (!claimMatches) {
         throw new Error(
-          "The Korey destination changed after approval; review and approve a new request.",
+          "The Korey destination changed while preparing the request; inspect the linked conversation before trying again.",
         );
       }
     }
@@ -578,7 +551,7 @@ export default async function plugin(bb: BbPluginApi) {
         mapping.generation !== newMappingClaim.previousGeneration + 1)
     ) {
       throw new Error(
-        "The Korey destination changed after approval; review and approve a new request.",
+        "The Korey destination changed while preparing the request; inspect the linked conversation before trying again.",
       );
     }
     if (mapping.state !== "reserved" || mapping.marker === null) {
@@ -823,7 +796,7 @@ export default async function plugin(bb: BbPluginApi) {
     );
   }
 
-  async function approvalDestination(
+  async function requestDestination(
     api: KoreyClient,
     bbThreadId: string,
     signal?: AbortSignal,
@@ -834,13 +807,13 @@ export default async function plugin(bb: BbPluginApi) {
     assertPrivateThread(thread);
     if (thread.state !== "ready") {
       throw new Error(
-        `Linked Korey thread ${thread.id} is ${thread.state}, not ready. Wait for Korey to finish or link a ready conversation before requesting approval.`,
+        `Linked Korey thread ${thread.id} is ${thread.state}, not ready. Wait for Korey to finish or link a ready conversation before sending the request.`,
       );
     }
     return { ...destination, koreyThreadRevision: thread.updated_at };
   }
 
-  function mappingStillMatches(request: ShortcutApprovalPayload): boolean {
+  function mappingStillMatches(request: ShortcutRequest): boolean {
     const mapping = getMapping(db, request.bbThreadId);
     if (request.destination.kind === "new-private-thread") {
       return mapping === null
@@ -855,8 +828,8 @@ export default async function plugin(bb: BbPluginApi) {
     );
   }
 
-  function approvedMappingMatches(
-    request: ShortcutApprovalPayload,
+  function requestMappingMatches(
+    request: ShortcutRequest,
     mapping: MappingRecord,
   ): boolean {
     if (request.destination.kind === "new-private-thread") {
@@ -874,29 +847,34 @@ export default async function plugin(bb: BbPluginApi) {
     );
   }
 
-  function unresolvedOperationsStillMatch(
-    request: ShortcutApprovalPayload,
-  ): boolean {
-    return (
-      JSON.stringify(
-        unresolvedOperationSummaries(
-          db,
-          request.bbThreadId,
-          request.destination.koreyThreadId,
-        ),
-      ) === JSON.stringify(request.unresolvedOperations)
-    );
+  function assertNoUnresolvedOperations(
+    bbThreadId: string,
+    koreyThreadId: string | null,
+  ): void {
+    const unresolved = listUnresolvedOperations(db, bbThreadId, koreyThreadId);
+    if (unresolved.length > 0) {
+      const details = unresolved
+        .map((operation) => `${operation.id} (${operation.status})`)
+        .join(", ");
+      throw new Error(
+        `An earlier Shortcut operation is unresolved: ${details}. This request was not sent. Inspect it with korey_get_operation, then resume or reconcile it. If the outcome remains unknown, ask the user before using bb korey operation resolve; do not submit a replacement automatically.`,
+      );
+    }
   }
 
   function shortcutPrompt(
     request: Pick<
-      ShortcutApprovalPayload,
+      ShortcutRequest,
       "action" | "operationId" | "storyId" | "instruction"
     >,
+    legacyApproval = false,
   ): string {
+    const authorization = legacyApproval
+      ? "The user approved this external write through bb's confirmation UI."
+      : "The user requested this Shortcut change from BB.";
     return request.action === "create"
       ? [
-          "The user approved this external write through bb's confirmation UI.",
+          authorization,
           operationMarker(request.operationId),
           "Create exactly one Shortcut Story in the connected workspace.",
           "Return the created Story ID and URL. Do not create a duplicate if this operation reference already appears in the conversation.",
@@ -904,7 +882,7 @@ export default async function plugin(bb: BbPluginApi) {
           request.instruction,
         ].join("\n")
       : [
-          "The user approved this external write through bb's confirmation UI.",
+          authorization,
           operationMarker(request.operationId),
           `Update Shortcut Story ${request.storyId}.`,
           "Preserve unrelated fields. Return the Story ID, URL, and fields changed.",
@@ -930,7 +908,7 @@ export default async function plugin(bb: BbPluginApi) {
         "This operation has no recorded message text and its request version cannot be reconciled by this plugin. Inspect Korey and Shortcut, then use operation resolve.",
       );
     }
-    return shortcutPrompt(legacy.data);
+    return shortcutPrompt(legacy.data, true);
   }
 
   function messageMatchesRequest(
@@ -1031,16 +1009,16 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
-  async function executeApprovedOperation(
+  async function executeShortcutOperation(
     api: KoreyClient,
     operation: OperationRecord,
-    request: ShortcutApprovalPayload,
+    request: ShortcutRequest,
     prepared: readonly PreparedAttachment[],
     signal?: AbortSignal,
   ): Promise<OperationRecord> {
     transitionOperation(db, {
       id: operation.id,
-      from: "approved",
+      from: "requested",
       to: "preparing",
       patch: { error: null },
     });
@@ -1059,9 +1037,9 @@ export default async function plugin(bb: BbPluginApi) {
             }
           : undefined,
       );
-      if (!approvedMappingMatches(request, linked.mapping)) {
+      if (!requestMappingMatches(request, linked.mapping)) {
         throw new Error(
-          "The Korey destination changed after approval; review and approve a new request.",
+          "The Korey destination changed while preparing the request; inspect the linked conversation before trying again.",
         );
       }
       if (linked.mapping.koreyThreadId === null) {
@@ -1080,7 +1058,7 @@ export default async function plugin(bb: BbPluginApi) {
         koreyThread.updated_at !== request.destination.koreyThreadRevision
       ) {
         throw new Error(
-          "The Korey conversation changed after approval; review and approve a new request.",
+          "The Korey conversation changed while preparing the request; inspect it before trying again.",
         );
       }
       if (koreyThread.state !== "ready") {
@@ -1098,7 +1076,7 @@ export default async function plugin(bb: BbPluginApi) {
         },
       });
       throw new Error(
-        `Korey operation ${operation.id} stopped before sending a Shortcut message. Request a new approval only after resolving the error. ${error instanceof Error ? error.message : String(error)}`,
+        `Korey operation ${operation.id} stopped before sending a Shortcut message. Resolve the error before trying again. ${error instanceof Error ? error.message : String(error)}`,
       );
     }
 
@@ -1133,7 +1111,7 @@ export default async function plugin(bb: BbPluginApi) {
           },
         });
         throw new Error(
-          `Korey operation ${operation.id} sent no Shortcut message because attachment upload did not complete. Uploaded files may still consume the thread quota; inspect Korey before starting a new approved operation.`,
+          `Korey operation ${operation.id} sent no Shortcut message because attachment upload did not complete. Uploaded files may still consume the thread quota; inspect Korey before starting another operation.`,
         );
       }
       transitionOperation(db, {
@@ -1153,19 +1131,19 @@ export default async function plugin(bb: BbPluginApi) {
 
     // Recovery in a previous BB thread can change this conversation's journal
     // while preparation awaits Korey, outside the current BB-thread lock.
-    if (!unresolvedOperationsStillMatch(request)) {
+    try {
+      assertNoUnresolvedOperations(operation.bbThreadId, koreyThread.id);
+      signal?.throwIfAborted();
+    } catch (error) {
       transitionOperation(db, {
         id: operation.id,
         from: "attachments-uploaded",
         to: "definite-failure",
         patch: {
-          error:
-            "No Shortcut message was dispatched because unresolved operation state changed during preparation",
+          error: `No Shortcut message was dispatched. ${error instanceof Error ? error.message : String(error)}`,
         },
       });
-      throw new Error(
-        `Korey operation ${operation.id} sent no Shortcut message because unresolved operation state changed. Review and approve a new request.`,
-      );
+      throw error;
     }
     const dispatchedText = shortcutPrompt(request);
     transitionOperation(db, {
@@ -1249,123 +1227,42 @@ export default async function plugin(bb: BbPluginApi) {
         `Invalid Shortcut story ID ${JSON.stringify(input.storyId)}`,
       );
     }
-    const api = await client();
-    const [prepared, identity, destination] = await Promise.all([
-      readAttachments(bbThreadId, input.files ?? [], signal),
-      api.identity(signal),
-      approvalDestination(api, bbThreadId, signal),
-    ]);
-    const operationId = `korey-${randomUUID()}`;
-    const unsigned = {
-      operationId,
-      bbThreadId,
-      action: input.action,
-      storyId,
-      instruction: input.instruction.trim(),
-      koreyOrganization: identity.korey_organization_slug,
-      destination,
-      attachments: prepared.map(({ summary }) => summary),
-      unresolvedOperations: unresolvedOperationSummaries(
-        db,
-        bbThreadId,
-        destination.koreyThreadId,
-      ),
-    };
-    const request = shortcutApprovalPayloadSchema.parse({
-      ...unsigned,
-      payloadHash: hash(JSON.stringify(unsigned)),
-    });
-    let operation = createOperation(db, request);
-
-    let interaction;
-    try {
-      interaction = await bb.ui.requestInput(
-        {
-          threadId: bbThreadId,
-          rendererId: SHORTCUT_APPROVAL_RENDERER_ID,
-          timeoutMs: INTERACTION_TIMEOUT_MS,
-          title: `${input.action === "create" ? "Create" : "Update"} Shortcut Story`,
-          payload: request,
-        },
-        { signal },
-      );
-    } catch (error) {
-      transitionOperation(db, {
-        id: operation.id,
-        from: "awaiting-approval",
-        to: "cancelled",
-        patch: {
-          error: `Approval could not be shown: ${error instanceof Error ? error.message : String(error)}`,
-        },
-      });
-      throw error;
-    }
-    if (interaction.outcome === "cancelled") {
-      transitionOperation(db, {
-        id: operation.id,
-        from: "awaiting-approval",
-        to: "cancelled",
-        patch: { error: `Approval cancelled (${interaction.reason})` },
-      });
-      throw new Error(
-        `Shortcut change was not sent because approval was cancelled (${interaction.reason}).`,
-      );
-    }
-    const approval = shortcutApprovalResponseSchema.safeParse(
-      interaction.value,
-    );
-    if (
-      !approval.success ||
-      approval.data.operationId !== request.operationId ||
-      approval.data.payloadHash !== request.payloadHash
-    ) {
-      transitionOperation(db, {
-        id: operation.id,
-        from: "awaiting-approval",
-        to: "cancelled",
-        patch: { error: "Approval did not match the immutable request" },
-      });
-      throw new Error(
-        "Shortcut change was not sent because the approval did not match the request.",
-      );
-    }
-
     return withThreadLock(bbThreadId, async () => {
-      if (!unresolvedOperationsStillMatch(request)) {
-        transitionOperation(db, {
-          id: operation.id,
-          from: "awaiting-approval",
-          to: "cancelled",
-          patch: {
-            error:
-              "The set of unresolved Shortcut operations changed while approval was pending",
-          },
-        });
-        throw new Error(
-          "Shortcut change was not sent because unresolved operation state changed. Review and approve a new request.",
-        );
-      }
-      if (!mappingStillMatches(request)) {
-        transitionOperation(db, {
-          id: operation.id,
-          from: "awaiting-approval",
-          to: "cancelled",
-          patch: {
-            error:
-              "The linked Korey destination changed while approval was pending",
-          },
-        });
-        throw new Error(
-          "Shortcut change was not sent because the Korey destination changed. Review and approve a new request.",
-        );
-      }
-      operation = transitionOperation(db, {
-        id: operation.id,
-        from: "awaiting-approval",
-        to: "approved",
-        patch: { approvedAt: Date.now(), error: null },
+      signal?.throwIfAborted();
+      const currentDestination = mappingDestination(bbThreadId);
+      assertNoUnresolvedOperations(
+        bbThreadId,
+        currentDestination.koreyThreadId,
+      );
+      const api = await client();
+      const [prepared, identity, destination] = await Promise.all([
+        readAttachments(bbThreadId, input.files ?? [], signal),
+        api.identity(signal),
+        requestDestination(api, bbThreadId, signal),
+      ]);
+      signal?.throwIfAborted();
+      const unsigned = {
+        operationId: `korey-${randomUUID()}`,
+        bbThreadId,
+        action: input.action,
+        storyId,
+        instruction: input.instruction.trim(),
+        koreyOrganization: identity.korey_organization_slug,
+        destination,
+        attachments: prepared.map(({ summary }) => summary),
+      };
+      const request = shortcutRequestSchema.parse({
+        ...unsigned,
+        requestHash: hash(JSON.stringify(unsigned)),
       });
-      return executeApprovedOperation(
+      if (!mappingStillMatches(request)) {
+        throw new Error(
+          "The Korey destination changed while preparing the request. Inspect the linked conversation before trying again.",
+        );
+      }
+      assertNoUnresolvedOperations(bbThreadId, destination.koreyThreadId);
+      const operation = createOperation(db, request);
+      return executeShortcutOperation(
         api,
         operation,
         request,
@@ -1895,7 +1792,7 @@ export default async function plugin(bb: BbPluginApi) {
     description:
       "Ask Korey to research connected tools, answer questions, or prepare drafts using its existing connector access. Continues the private Korey conversation linked to this BB thread. The plugin instructs Korey not to modify connected systems.",
     instructions:
-      'For "Ask Korey ..." research and drafting requests, delegate the desired outcome and relevant context to Korey. It uses the services connected in Korey, such as Shortcut, Sentry, and LaunchDarkly. Use korey_shortcut_change for Shortcut Story creation or updates; that tool displays an immutable approval request. The consultation restriction is a prompt instruction, not a connector permission boundary.',
+      'For "Ask Korey ..." research and drafting requests, delegate the desired outcome and relevant context to Korey. It uses the services connected in Korey, such as Shortcut, Sentry, and LaunchDarkly. Use korey_shortcut_change for Shortcut Story creation or updates; that tool sends the user’s requested change directly. The consultation restriction is a prompt instruction, not a connector permission boundary.',
     parameters: z
       .object({
         prompt: z.string().trim().min(1).max(20_000),
@@ -1928,9 +1825,9 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: "korey_shortcut_change",
     description:
-      "Ask Korey to create or update a Shortcut Story using its connector and workspace conventions. Before sending the request, BB shows the user an approval bound to the exact action, destination, instruction, and attachment hashes.",
+      "Ask Korey to create or update a Shortcut Story using its connector and workspace conventions. An explicit user request authorizes the change; no extra confirmation form is shown.",
     instructions:
-      "Call only when the user requested the exact Shortcut create or update. The plugin obtains its own interactive approval; do not claim approval in tool arguments. Never retry a failed or unresolved operation by calling this tool again. Inspect it with korey_get_operation, then use korey_resume_operation or korey_reconcile_operation when applicable.",
+      "Call only when the user requested the exact Shortcut create or update. The user’s explicit request is sufficient authorization. Ask for clarification only if the intended change or destination is unclear. Never retry an operation with an unknown outcome by calling this tool again. Inspect it with korey_get_operation, then use korey_resume_operation or korey_reconcile_operation when applicable.",
     parameters: shortcutChangeInputSchema,
     async execute(input, context) {
       return executeJsonTool(async () =>
@@ -2017,6 +1914,6 @@ export default async function plugin(bb: BbPluginApi) {
     ],
     skills: ["korey"],
     instructions:
-      'Korey brings its connected services to every BB harness. For "Ask Korey ..." requests, delegate the user’s goal and context to Korey. Use korey_ask for connector research, analysis, and drafts, and korey_shortcut_change for approved Shortcut Story creation or updates. Connector setup and reauthentication happen in Korey. Consultation is prompt-mediated; other connector writes are not supported by this plugin. Never replace or automatically retry an ambiguous operation; inspect, resume, or reconcile its existing operation ID.',
+      'Korey brings its connected services to every BB harness. For "Ask Korey ..." requests, delegate the user’s goal and context to Korey. Use korey_ask for connector research, analysis, and drafts, and korey_shortcut_change for user-requested Shortcut Story creation or updates. Connector setup and reauthentication happen in Korey. Consultation is prompt-mediated; other connector writes are not supported by this plugin. Never replace or automatically retry an ambiguous operation; inspect, resume, or reconcile its existing operation ID.',
   }));
 }
