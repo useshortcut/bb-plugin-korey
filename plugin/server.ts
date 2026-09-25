@@ -338,6 +338,9 @@ function plainConversation(
           if (content.type === "user_get_choice") {
             return `${content.question} [${content.choices.join(" / ")}]`;
           }
+          if (content.type === "unknown") {
+            return `[Unsupported Korey content: ${content.originalType}; view ${message.app_url}]`;
+          }
           return `[${content.type} attachment ${content.attachment_id}]`;
         })
         .join("\n");

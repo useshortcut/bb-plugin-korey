@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { AttachmentFile } from "./attachments.js";
-import type { z } from "zod";
+import { z } from "zod";
 import { EndpointByMethod } from "../generated/korey-api.js";
 
 const DEFAULT_BASE_URL = "https://api.korey.ai/api/v1";
@@ -21,15 +21,47 @@ const uploadEndpoint =
 const responseEndpoint =
   EndpointByMethod.get["/threads/{thread-id}/messages/{message-id}/response"];
 
-const identitySchema = identityEndpoint.responses[200];
-const koreyThreadSchema = getThreadEndpoint.responses[200];
-const threadPageSchema = listThreadsEndpoint.responses[200];
-const messagePageSchema = listMessagesEndpoint.responses[200];
-const createThreadResponseSchema = createThreadEndpoint.responses[201];
-const sendMessageResponseSchema = sendMessageEndpoint.responses[201];
-const uploadResponseSchema = uploadEndpoint.responses[201];
-const completeResponseSchema = responseEndpoint.responses[200];
-const processingResponseSchema = responseEndpoint.responses[202];
+// Accept additive response changes without weakening request validation or
+// changing the pinned API contract. Known fields still use generated schemas.
+const identitySchema = identityEndpoint.responses[200].strip();
+const koreyThreadSchema = getThreadEndpoint.responses[200].strip().extend({
+  owner: getThreadEndpoint.responses[200].shape.owner.strip(),
+});
+const threadPageSchema = listThreadsEndpoint.responses[200].strip().extend({
+  data: z.array(koreyThreadSchema),
+});
+const generatedMessageSchema =
+  listMessagesEndpoint.responses[200].shape.data.element;
+const knownContentSchemas =
+  generatedMessageSchema.shape.contents.element.options;
+const knownContentTypes = new Set<string>(
+  knownContentSchemas.map((schema) => schema.shape.type.value),
+);
+const contentSchema = z.union([
+  ...knownContentSchemas.map((schema) => schema.strip()),
+  z
+    .object({ type: z.string().min(1) })
+    .refine((content) => !knownContentTypes.has(content.type))
+    .transform((content) => ({
+      type: "unknown" as const,
+      originalType: content.type,
+    })),
+]);
+const messageSchema = generatedMessageSchema.strip().extend({
+  contents: z.array(contentSchema),
+});
+const messagePageSchema = listMessagesEndpoint.responses[200].strip().extend({
+  data: z.array(messageSchema),
+});
+const createThreadResponseSchema = createThreadEndpoint.responses[201].strip();
+const sendMessageResponseSchema = sendMessageEndpoint.responses[201].strip();
+const uploadResponseSchema = z.array(
+  uploadEndpoint.responses[201].element.strip(),
+);
+const completeResponseSchema = responseEndpoint.responses[200].strip().extend({
+  messages: z.array(messageSchema),
+});
+const processingResponseSchema = responseEndpoint.responses[202].strip();
 
 export type KoreyIdentity = z.infer<typeof identitySchema>;
 export type KoreyThread = z.infer<typeof koreyThreadSchema>;
@@ -148,6 +180,11 @@ export function formatKoreyMessages(messages: readonly KoreyMessage[]): string {
           break;
         case "document":
           parts.push(`[Korey document attachment ${content.attachment_id}]`);
+          break;
+        case "unknown":
+          parts.push(
+            `[Unsupported Korey content: ${content.originalType}; view the message in Korey: ${message.app_url}]`,
+          );
           break;
       }
     }

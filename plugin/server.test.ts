@@ -632,37 +632,58 @@ describe("Korey Shortcut approval and recovery", () => {
     ).toHaveLength(0);
   });
 
-  it("sends one approved create and records immutable operation details", async () => {
-    const calls = stubFetch([
-      identityResponse(),
-      jsonResponse(koreyThread()),
-      jsonResponse(koreyThread()),
-      jsonResponse({ message_id: "write-message-1" }, 201),
-      completeResponse("Created SC-123"),
-    ]);
-    const host = await loadPlugin();
-    storeMapping(host);
-    const pendingResult = host.harness.callAgentTool("korey_shortcut_change", {
-      action: "create",
-      instruction: "Create the approved Story.",
-    });
-    const interaction = await waitForApproval(host);
-    approve(host, interaction);
+  it.each([false, true])(
+    "completes one approved create, including additive API changes (%s)",
+    async (additive) => {
+      const calls = stubFetch([
+        identityResponse(),
+        jsonResponse(koreyThread()),
+        jsonResponse(koreyThread()),
+        jsonResponse({ message_id: "write-message-1" }, 201),
+        additive
+          ? jsonResponse({
+              status: "complete",
+              extra: true,
+              messages: [
+                {
+                  ...assistantMessage("Created SC-123"),
+                  extra: true,
+                  contents: [
+                    { type: "text", text: "Created SC-123", extra: true },
+                    { type: "connector_result" },
+                  ],
+                },
+              ],
+            })
+          : completeResponse("Created SC-123"),
+      ]);
+      const host = await loadPlugin();
+      storeMapping(host);
+      const pendingResult = host.harness.callAgentTool(
+        "korey_shortcut_change",
+        {
+          action: "create",
+          instruction: "Create the approved Story.",
+        },
+      );
+      const interaction = await waitForApproval(host);
+      approve(host, interaction);
 
-    const result = await pendingResult;
-    expect(result).toBeTypeOf("string");
-    expect(JSON.parse(String(result))).toMatchObject({
-      operationId: interaction.payload.operationId,
-      status: "korey-complete",
-      response: "Created SC-123",
-    });
-    const sentBody = JSON.parse(String(calls[3]?.init?.body));
-    expect(sentBody.text).toContain(
-      `BB operation reference: ${interaction.payload.operationId}`,
-    );
-    expect(sentBody.text).toContain("Create exactly one Shortcut Story");
-    expect(calls).toHaveLength(5);
-  });
+      const result = await pendingResult;
+      expect(result).toBeTypeOf("string");
+      expect(JSON.parse(String(result))).toMatchObject({
+        operationId: interaction.payload.operationId,
+        status: "korey-complete",
+        response: expect.stringContaining("Created SC-123"),
+      });
+      const sentBody = JSON.parse(String(calls[3]?.init?.body));
+      expect(sentBody.text).toContain(
+        `BB operation reference: ${interaction.payload.operationId}`,
+      );
+      expect(sentBody.text).toContain("Create exactly one Shortcut Story");
+      expect(calls).toHaveLength(5);
+    },
+  );
 
   it("claims a new mapping with the approved operation ID", async () => {
     const calls = stubFetch([

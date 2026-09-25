@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { KoreyApiError, KoreyClient } from "./korey-client.js";
+import {
+  formatKoreyMessages,
+  KoreyApiError,
+  KoreyClient,
+} from "./korey-client.js";
 import { withHttpServer } from "./testing/http-server.js";
 
 function jsonResponse(value: unknown, status = 200): Response {
@@ -35,6 +39,70 @@ function koreyThreadResponse() {
 }
 
 describe("KoreyClient", () => {
+  it("accepts additive response fields and preserves unknown content as a visible placeholder", async () => {
+    const thread = koreyThreadResponse();
+    const message = {
+      ...assistantMessage(thread.id, "Done"),
+      extra: true,
+      contents: [
+        { type: "text", text: "Done", annotations: [] },
+        { type: "connector_result", result: { ok: true } },
+      ],
+    };
+    const responses = [
+      jsonResponse({
+        ...thread,
+        extra: true,
+        owner: { ...thread.owner, extra: true },
+      }),
+      jsonResponse({ message_id: "sent", extra: true }, 201),
+      jsonResponse({ status: "processing", extra: true }, 202),
+      jsonResponse({ status: "complete", messages: [message], extra: true }),
+      jsonResponse({
+        data: [message],
+        first_id: message.id,
+        last_id: message.id,
+        has_more: false,
+        limit: 200,
+        extra: true,
+      }),
+    ];
+    const client = new KoreyClient({
+      token: "test",
+      pollIntervalMs: 0,
+      fetch: async () => responses.shift()!,
+    });
+    await expect(client.getThread(thread.id)).resolves.toEqual(thread);
+    await expect(
+      client.sendMessage(thread.id, "Create a Story"),
+    ).resolves.toEqual({ message_id: "sent" });
+    const messages = await client.waitForResponse(thread.id, "sent");
+    expect(formatKoreyMessages(messages)).toContain(
+      "Done\n\n[Unsupported Korey content: connector_result;",
+    );
+    expect(formatKoreyMessages(messages)).toContain(message.app_url);
+    await expect(client.listAllMessages(thread.id)).resolves.toEqual(messages);
+  });
+
+  it("still rejects malformed known content blocks", async () => {
+    const client = new KoreyClient({
+      token: "test",
+      fetch: async () =>
+        jsonResponse({
+          status: "complete",
+          messages: [
+            {
+              ...assistantMessage("thread-one", "Done"),
+              contents: [{ type: "text", text: 42 }],
+            },
+          ],
+        }),
+    });
+    await expect(client.waitForResponse("thread-one", "sent")).rejects.toThrow(
+      "invalid response",
+    );
+  });
+
   it.each([307, 308])(
     "does not replay a message POST after HTTP %i",
     async (status) => {
