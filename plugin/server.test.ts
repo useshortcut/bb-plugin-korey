@@ -207,6 +207,41 @@ afterEach(async () => {
 
 describe("Korey plugin conversations", () => {
   it.each([
+    ["missing", {}],
+    ["empty", { apiToken: "" }],
+    ["whitespace-only", { apiToken: " \t\n " }],
+  ] as const)(
+    "requests setup for a %s token and accepts a corrected setting",
+    async (_label, settings) => {
+      const responses: StubbedFetchResult[] = [];
+      const calls = stubFetch(responses);
+      const host = await loadPlugin({ settings });
+      const setupUrl = "https://app.korey.ai/settings/api-tokens";
+      expect(host.harness.needsConfigurationMessages).toEqual([
+        expect.stringContaining(setupUrl),
+      ]);
+      const tool = await host.harness.callAgentTool("korey_status", {});
+      expect(tool).toMatchObject({ isError: true });
+      expect(JSON.stringify(tool)).toContain(setupUrl);
+      const cli = await host.harness.runCli(["status"]);
+      expect(cli).toMatchObject({
+        exitCode: 1,
+        stderr: expect.stringContaining(setupUrl),
+      });
+      expect(calls).toHaveLength(0);
+
+      await host.harness.behavior.setSettings({
+        apiToken: "  kt_pat_corrected \n",
+      });
+      responses.push(identityResponse());
+      expect((await host.harness.runCli(["status"])).exitCode).toBe(0);
+      expect(new Headers(calls[0]?.init?.headers).get("authorization")).toBe(
+        "Bearer kt_pat_corrected",
+      );
+    },
+  );
+
+  it.each([
     ["consultation", "sdk failure"],
     ["consultation", "cancellation"],
     ["write", "sdk failure"],

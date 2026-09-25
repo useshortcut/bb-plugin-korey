@@ -388,12 +388,12 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  if (!(await settings.get()).apiToken) {
+  if (!(await settings.get()).apiToken?.trim()) {
     bb.status.needsConfiguration(TOKEN_SETUP_GUIDANCE);
   }
 
   async function client(): Promise<KoreyClient> {
-    const { apiToken } = await settings.get();
+    const apiToken = (await settings.get()).apiToken?.trim();
     if (!apiToken) {
       throw new Error(`Korey is not configured. ${TOKEN_SETUP_GUIDANCE}`);
     }
