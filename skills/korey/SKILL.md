@@ -40,6 +40,10 @@ conversation. Use `korey_unlink_thread` to remove the current bb-thread mapping
 without changing the remote conversation. Follow pagination cursors when a
 result reports `has_more`.
 
+After relinking, recover the conversation's unresolved operations from the
+current thread or their originating thread. The plugin blocks another link
+change until inherited unresolved operations are recovered.
+
 ## Include workspace files
 
 Pass workspace-relative `files` with the request. A request accepts up to five

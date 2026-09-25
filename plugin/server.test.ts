@@ -562,6 +562,9 @@ describe("Korey Shortcut requests and recovery", () => {
       expect(result).toMatchObject({ isError: true });
       expect(JSON.stringify(result)).toContain(original.operationId);
       expect(JSON.stringify(result)).toContain("This request was not sent");
+      expect(JSON.stringify(result)).toContain(
+        `bb korey operation show ${original.operationId} --bb-thread thread-test`,
+      );
       expect(calls).toHaveLength(5);
       expect(calls.filter((call) => call.init?.method === "POST")).toHaveLength(
         1,
@@ -570,6 +573,180 @@ describe("Korey Shortcut requests and recovery", () => {
       expect(
         listOperations(host.bb.storage.database(), target, 20),
       ).toHaveLength(scenario === "relinked" ? 0 : 1);
+    },
+  );
+
+  it.each(["resume", "reconcile", "resolve"] as const)(
+    "allows %s from a relinked thread without escaping or duplicating the operation",
+    async (action) => {
+      const responses: StubbedFetchResult[] = [
+        identityResponse(),
+        jsonResponse(koreyThread()),
+        jsonResponse(koreyThread()),
+        ...(action === "resume"
+          ? [
+              jsonResponse({ message_id: "sent" }, 201),
+              jsonResponse({ message: "Response unavailable" }, 404),
+            ]
+          : [new Error("connection reset"), messagePage()]),
+      ];
+      const calls = stubFetch(responses);
+      const host = await loadPlugin();
+      storeMapping(host);
+      await host.harness.callAgentTool("korey_shortcut_change", {
+        action: "create",
+        instruction: "Create one Story.",
+      });
+      const db = host.bb.storage.database();
+      const request = recordedRequest(host);
+      const original = getOperation(db, request.operationId)!;
+      const context = { threadId: "thread-other" };
+
+      await host.harness.callAgentTool("korey_unlink_thread", {});
+      responses.push(jsonResponse(koreyThread()));
+      await host.harness.callAgentTool(
+        "korey_link_thread",
+        { koreyThreadId: "korey-thread-1" },
+        context,
+      );
+      expect(
+        JSON.parse(
+          String(
+            await host.harness.callAgentTool(
+              "korey_get_operation",
+              { operationId: original.id },
+              context,
+            ),
+          ),
+        ),
+      ).toMatchObject({ operationId: original.id, status: original.status });
+      expect(
+        JSON.parse(
+          String(
+            await host.harness.callAgentTool(
+              "korey_list_operations",
+              {},
+              context,
+            ),
+          ),
+        ),
+      ).toEqual([expect.objectContaining({ operationId: original.id })]);
+      const listed = await host.harness.runCli([
+        "operation",
+        "list",
+        "--bb-thread",
+        context.threadId,
+        "--json",
+      ]);
+      expect(JSON.parse(listed.stdout)).toEqual([
+        expect.objectContaining({ operationId: original.id }),
+      ]);
+
+      for (const tool of [
+        "korey_get_operation",
+        "korey_resume_operation",
+        "korey_reconcile_operation",
+      ]) {
+        const denied = await host.harness.callAgentTool(
+          tool,
+          { operationId: original.id },
+          { threadId: "unrelated-thread" },
+        );
+        expect(denied).toMatchObject({ isError: true });
+        expect(JSON.stringify(denied)).toContain("Unknown Korey operation");
+      }
+      for (const [tool, input] of [
+        ["korey_unlink_thread", {}],
+        ["korey_link_thread", { koreyThreadId: "korey-thread-2" }],
+      ] as const) {
+        const blocked = await host.harness.callAgentTool(tool, input, context);
+        expect(blocked).toMatchObject({ isError: true });
+        expect(JSON.stringify(blocked)).toContain(original.id);
+        expect(JSON.stringify(blocked)).toContain("before changing its link");
+      }
+      expect(getMapping(db, context.threadId)?.koreyThreadId).toBe(
+        "korey-thread-1",
+      );
+      expect(calls).toHaveLength(6);
+
+      let resolvedExitCode: number | undefined;
+      let recoveredStatuses: string[] = [];
+      if (action === "resolve") {
+        const resolving = host.harness.runCli([
+          "operation",
+          "resolve",
+          original.id,
+          "Verified the requested Story exists.",
+          "--bb-thread",
+          context.threadId,
+          "--json",
+        ]);
+        const interaction = await vi.waitFor(() => {
+          const pending = host.harness.pendingInteractions[0];
+          if (pending === undefined)
+            throw new Error("Waiting for resolution form");
+          return pending;
+        });
+        const payload = operationResolutionPayloadSchema.parse(
+          interaction.payload,
+        );
+        host.harness.submitInteraction(interaction.id, {
+          confirmed: true,
+          operationId: original.id,
+          resolutionHash: payload.resolutionHash,
+        });
+        resolvedExitCode = (await resolving).exitCode;
+      } else {
+        if (action === "reconcile") {
+          responses.push(
+            messagePage([userMessage(original.dispatchedText!, "sent")]),
+          );
+        }
+        responses.push(completeResponse("Created SC-123"));
+        const tool =
+          action === "resume"
+            ? "korey_resume_operation"
+            : "korey_reconcile_operation";
+        const results = await Promise.all(
+          [context.threadId, "thread-test"].map((threadId) =>
+            host.harness.callAgentTool(
+              tool,
+              { operationId: original.id },
+              { threadId },
+            ),
+          ),
+        );
+        recoveredStatuses = results.map(
+          (result) => JSON.parse(String(result)).status,
+        );
+      }
+      expect(resolvedExitCode).toBe(action === "resolve" ? 0 : undefined);
+      expect(recoveredStatuses).toEqual(
+        action === "resolve" ? [] : ["korey-complete", "korey-complete"],
+      );
+      expect(getOperation(db, original.id)?.status).toBe(
+        action === "resolve" ? "manually-resolved" : "korey-complete",
+      );
+      expect(
+        listUnresolvedOperations(db, context.threadId, "korey-thread-1"),
+      ).toEqual([]);
+      expect(calls.filter(({ init }) => init?.method === "POST")).toHaveLength(
+        1,
+      );
+
+      const unlinked = await host.harness.callAgentTool(
+        "korey_unlink_thread",
+        {},
+        context,
+      );
+      expect(JSON.parse(String(unlinked))).toMatchObject({ removed: true });
+      const denied = await host.harness.callAgentTool(
+        "korey_get_operation",
+        { operationId: original.id },
+        context,
+      );
+      expect(denied).toMatchObject({ isError: true });
+      expect(host.harness.pendingInteractions).toHaveLength(0);
     },
   );
 

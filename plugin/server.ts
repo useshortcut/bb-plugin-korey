@@ -607,18 +607,37 @@ export default async function plugin(bb: BbPluginApi) {
     signal?: AbortSignal,
   ): Promise<KoreyThread> {
     return withThreadLock(bbThreadId, async () => {
+      assertCanChangeMapping(bbThreadId, koreyThreadId);
       const api = await client();
       const thread = await api.getThread(koreyThreadId, signal);
       assertPrivateThread(thread);
+      assertCanChangeMapping(bbThreadId, thread.id);
       setLinkedMapping(db, bbThreadId, thread.id);
       return thread;
     });
   }
 
   async function unlinkThread(bbThreadId: string): Promise<boolean> {
-    return withThreadLock(bbThreadId, async () =>
-      setUnlinkedMapping(db, bbThreadId),
+    return withThreadLock(bbThreadId, async () => {
+      assertCanChangeMapping(bbThreadId, null);
+      return setUnlinkedMapping(db, bbThreadId);
+    });
+  }
+
+  function assertCanChangeMapping(
+    bbThreadId: string,
+    destination: string | null,
+  ): void {
+    const current = getMapping(db, bbThreadId)?.koreyThreadId ?? null;
+    if (current === destination) return;
+    const inherited = listUnresolvedOperations(db, bbThreadId, current).filter(
+      (operation) => operation.bbThreadId !== bbThreadId,
     );
+    if (inherited.length > 0) {
+      throw new Error(
+        `Recover the unresolved Shortcut operations in this conversation before changing its link: ${inherited.map(({ id }) => id).join(", ")}. Inspect them here with korey_get_operation, then resume, reconcile, or manually resolve them. Changing the link would bypass their recovery safeguards.`,
+      );
+    }
   }
 
   async function readAttachments(
@@ -854,12 +873,16 @@ export default async function plugin(bb: BbPluginApi) {
     koreyThreadId: string | null,
   ): void {
     const unresolved = listUnresolvedOperations(db, bbThreadId, koreyThreadId);
-    if (unresolved.length > 0) {
+    const [first] = unresolved;
+    if (first !== undefined) {
       const details = unresolved
-        .map((operation) => `${operation.id} (${operation.status})`)
+        .map(
+          (operation) =>
+            `${operation.id} (${operation.status}, originating bb thread ${operation.bbThreadId})`,
+        )
         .join(", ");
       throw new Error(
-        `An earlier Shortcut operation is unresolved: ${details}. This request was not sent. Inspect it with korey_get_operation, then resume or reconcile it. If the outcome remains unknown, ask the user before using bb korey operation resolve; do not submit a replacement automatically.`,
+        `An earlier Shortcut operation is unresolved: ${details}. This request was not sent. Inspect it here with korey_get_operation, or use bb korey operation show ${first.id} --bb-thread ${first.bbThreadId}, then resume or reconcile it. If the outcome remains unknown, ask the user before using bb korey operation resolve; do not submit a replacement automatically.`,
       );
     }
   }
@@ -1279,10 +1302,39 @@ export default async function plugin(bb: BbPluginApi) {
     operationId: string,
   ): OperationRecord {
     const operation = getOperation(db, operationId);
-    if (operation === null || operation.bbThreadId !== bbThreadId) {
+    const destination = getMapping(db, bbThreadId)?.koreyThreadId ?? null;
+    if (
+      operation === null ||
+      (operation.bbThreadId !== bbThreadId &&
+        (destination === null || operation.koreyThreadId !== destination))
+    ) {
       throw new Error(`Unknown Korey operation ${operationId}`);
     }
     return operation;
+  }
+
+  function operationsForThread(
+    bbThreadId: string,
+    limit: number,
+  ): OperationRecord[] {
+    return listOperations(
+      db,
+      bbThreadId,
+      limit,
+      getMapping(db, bbThreadId)?.koreyThreadId ?? null,
+    );
+  }
+
+  async function withOperationLock<T>(
+    bbThreadId: string,
+    operationId: string,
+    run: (operation: OperationRecord) => Promise<T>,
+  ): Promise<T> {
+    const operation = operationForThread(bbThreadId, operationId);
+    // Relinked and originating threads must serialize recovery of the same row.
+    return withThreadLock(operation.bbThreadId, async () =>
+      run(operationForThread(bbThreadId, operationId)),
+    );
   }
 
   async function resumeOperation(
@@ -1290,8 +1342,7 @@ export default async function plugin(bb: BbPluginApi) {
     operationId: string,
     signal?: AbortSignal,
   ): Promise<OperationRecord> {
-    return withThreadLock(bbThreadId, async () => {
-      const operation = operationForThread(bbThreadId, operationId);
+    return withOperationLock(bbThreadId, operationId, async (operation) => {
       if (operation.status === "korey-complete") return operation;
       return finishOperationPolling(await client(), operation, signal);
     });
@@ -1302,8 +1353,8 @@ export default async function plugin(bb: BbPluginApi) {
     operationId: string,
     signal?: AbortSignal,
   ): Promise<{ reconciled: boolean; operation: OperationRecord }> {
-    return withThreadLock(bbThreadId, async () => {
-      let operation = operationForThread(bbThreadId, operationId);
+    return withOperationLock(bbThreadId, operationId, async (current) => {
+      let operation = current;
       if (operation.status === "korey-complete") {
         return { reconciled: true, operation };
       }
@@ -1394,8 +1445,7 @@ export default async function plugin(bb: BbPluginApi) {
         "Operation resolution was not confirmed for this operation and note.",
       );
     }
-    return withThreadLock(bbThreadId, async () => {
-      const current = operationForThread(bbThreadId, operationId);
+    return withOperationLock(bbThreadId, operationId, async (current) => {
       if (resolutionHash(current) !== payload.resolutionHash) {
         throw new Error(
           "The operation changed while resolution was pending. Inspect it again before resolving.",
@@ -1621,8 +1671,7 @@ export default async function plugin(bb: BbPluginApi) {
             if (operationId !== undefined || extra.length > 0) {
               throw new Error("operation list accepts no operation ID");
             }
-            const operations = listOperations(
-              db,
+            const operations = operationsForThread(
               bbThreadId,
               parsed.limit ?? 20,
             ).map(operationView);
@@ -1843,13 +1892,13 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: "korey_list_operations",
     description:
-      "List recent Korey Shortcut operations for the current bb thread.",
+      "List recent Korey Shortcut operations from this bb thread or its linked Korey conversation.",
     parameters: z
       .object({ limit: z.number().int().min(1).max(50).default(20) })
       .strict(),
     async execute({ limit }, context) {
       return executeJsonTool(async () =>
-        listOperations(db, context.threadId, limit).map(operationView),
+        operationsForThread(context.threadId, limit).map(operationView),
       );
     },
   });

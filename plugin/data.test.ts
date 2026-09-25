@@ -7,6 +7,7 @@ import {
   createOperation,
   getOperation,
   getMapping,
+  listOperations,
   listUnresolvedOperations,
   migrations,
   recoverInterruptedOperations,
@@ -193,6 +194,16 @@ describe("Korey durable state", () => {
       ).toEqual(ids.slice(0, 4));
       expect(
         listUnresolvedOperations(db, "thread-b", null).map(({ id }) => id),
+      ).toEqual(ids.slice(0, 2));
+      expect(
+        listOperations(db, "thread-b", 20, "conversation-one")
+          .map(({ id }) => id)
+          .sort(),
+      ).toEqual([ids[0], ids[1], ids[2], ids[3], ids[5]]);
+      expect(
+        listOperations(db, "thread-b", 20)
+          .map(({ id }) => id)
+          .sort(),
       ).toEqual(ids.slice(0, 2));
     } finally {
       db.close();

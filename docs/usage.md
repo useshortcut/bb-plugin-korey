@@ -78,6 +78,13 @@ bb korey operation list
 bb korey operation show <operation-id>
 ```
 
+The list includes operations started in this bb thread and operations in its
+currently linked Korey conversation. After relinking a conversation, you can
+inspect, resume, reconcile, or manually resolve its operations from the new
+thread. The originating bb thread also retains access. Recover unresolved
+operations inherited from another thread before unlinking or changing the
+conversation link.
+
 If Korey accepted the message but response polling failed, resume only the
 read-only poll:
 

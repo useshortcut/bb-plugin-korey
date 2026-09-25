@@ -383,14 +383,15 @@ export function listOperations(
   db: Db,
   bbThreadId: string,
   limit: number,
+  koreyThreadId: string | null = null,
 ): OperationRecord[] {
   return db
     .prepare(
       `SELECT * FROM korey_operations
-        WHERE bb_thread_id = ?
+        WHERE bb_thread_id = ? OR korey_thread_id = ?
         ORDER BY created_at DESC, id DESC LIMIT ?`,
     )
-    .all(bbThreadId, limit)
+    .all(bbThreadId, koreyThreadId, limit)
     .map(operationRecord);
 }
 
