@@ -118,8 +118,11 @@ backoff for transient network errors, `429`, and `5xx`, and honors `Retry-After`
 Journals retain versioned request snapshots and the exact dispatched text.
 Reading history does not validate it against the current request schema;
 reconciliation uses recorded text, with a version 1 fallback for older journals.
-New operations use request version 2 and begin in `requested`; they do not
-record an approval timestamp. Version 1 journals retain their original prompts
+Shortcut operations use request version 2; general connector changes through
+`korey_ask` use version 3 with `action: "change"`. Both begin in `requested`
+without an approval timestamp and share dispatch, unresolved-operation checks,
+and recovery. General requests retain the same attachment hashes and exact
+dispatched text as Shortcut requests. Version 1 journals retain their original prompts
 and approval history. Pending approval rows from older plugin versions are
 cancelled on reload and are never dispatched automatically.
 Unresolved operations can be closed locally through the confirmed

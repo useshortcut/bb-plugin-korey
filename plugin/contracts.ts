@@ -48,6 +48,17 @@ export const shortcutRequestSchema = z
   })
   .strict();
 
+export const connectorChangeRequestSchema = shortcutRequestSchema.extend({
+  action: z.literal("change"),
+  storyId: z.null(),
+});
+
+export const operationRequestSchema = z.union([
+  shortcutRequestSchema,
+  connectorChangeRequestSchema,
+]);
+
+export type OperationRequest = z.infer<typeof operationRequestSchema>;
 export type ShortcutRequest = z.infer<typeof shortcutRequestSchema>;
 export type ShortcutAttachmentSummary = z.infer<
   typeof shortcutAttachmentSummarySchema
