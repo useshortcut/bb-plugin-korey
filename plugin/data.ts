@@ -1,9 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import {
-  shortcutApprovalPayloadSchema,
-  type ShortcutApprovalPayload,
-} from "./contracts.js";
+import type { ShortcutApprovalPayload } from "./contracts.js";
 
 type Db = ReturnType<BbPluginApi["storage"]["database"]>;
 
@@ -51,6 +48,8 @@ const operationRowSchema = z
     status: operationStatusSchema,
     request_json: z.string(),
     request_hash: z.string(),
+    request_version: z.number().int().positive(),
+    dispatched_text: z.string().nullable(),
     korey_thread_id: z.string().nullable(),
     korey_message_id: z.string().nullable(),
     attachment_ids_json: z.string().nullable(),
@@ -78,8 +77,10 @@ export interface OperationRecord {
   id: string;
   bbThreadId: string;
   status: OperationStatus;
-  request: ShortcutApprovalPayload;
+  request: Record<string, unknown>;
   requestHash: string;
+  requestVersion: number;
+  dispatchedText: string | null;
   koreyThreadId: string | null;
   koreyMessageId: string | null;
   attachmentIds: string[];
@@ -123,6 +124,8 @@ export const migrations = [
      ON korey_operations(bb_thread_id, created_at DESC);`,
   `CREATE INDEX korey_operations_destination_idx
      ON korey_operations(korey_thread_id);`,
+  `ALTER TABLE korey_operations ADD COLUMN request_version INTEGER NOT NULL DEFAULT 1;
+   ALTER TABLE korey_operations ADD COLUMN dispatched_text TEXT;`,
 ];
 
 function mappingRecord(value: unknown): MappingRecord {
@@ -148,8 +151,14 @@ function operationRecord(value: unknown): OperationRecord {
     id: row.id,
     bbThreadId: row.bb_thread_id,
     status: row.status,
-    request: shortcutApprovalPayloadSchema.parse(JSON.parse(row.request_json)),
+    // Historical approvals are data, not executable requests. Only the write
+    // path validates against the current approval contract.
+    request: z
+      .record(z.string(), z.unknown())
+      .parse(JSON.parse(row.request_json)),
     requestHash: row.request_hash,
+    requestVersion: row.request_version,
+    dispatchedText: row.dispatched_text,
     koreyThreadId: row.korey_thread_id,
     koreyMessageId: row.korey_message_id,
     attachmentIds,
@@ -379,6 +388,7 @@ export function listUnresolvedOperations(
 }
 
 interface OperationPatch {
+  dispatchedText?: string;
   koreyThreadId?: string;
   koreyMessageId?: string;
   attachmentIds?: readonly string[];
@@ -406,6 +416,10 @@ export function transitionOperation(
     updatedAt: Date.now(),
   };
   const patch = args.patch ?? {};
+  if (patch.dispatchedText !== undefined) {
+    sets.push("dispatched_text = @dispatchedText");
+    values.dispatchedText = patch.dispatchedText;
+  }
   if (patch.koreyThreadId !== undefined) {
     sets.push("korey_thread_id = @koreyThreadId");
     values.koreyThreadId = patch.koreyThreadId;

@@ -809,6 +809,28 @@ describe("Korey Shortcut approval and recovery", () => {
     await pendingResult;
 
     const sentBody = JSON.parse(String(calls[4]?.init?.body));
+    // Reconciliation uses the recorded bytes even if a later approval schema
+    // has changed. Historical records must remain inspectable as well.
+    host.bb.storage
+      .database()
+      .prepare(
+        "UPDATE korey_operations SET request_json = ?, request_version = 2 WHERE id = ?",
+      )
+      .run(
+        JSON.stringify({ action: "future-action" }),
+        interaction.payload.operationId,
+      );
+    const history = await host.harness.callAgentTool(
+      "korey_list_operations",
+      {},
+    );
+    expect(JSON.parse(String(history))).toEqual([
+      expect.objectContaining({
+        operationId: interaction.payload.operationId,
+        action: "unknown",
+        requestVersion: 2,
+      }),
+    ]);
     responses.push(
       messagePage([
         userMessage(

@@ -33,6 +33,34 @@ function request(operationId: string) {
 }
 
 describe("Korey durable state", () => {
+  it("migrates old journals and reads historical requests without today's approval schema", () => {
+    const db = new Database(":memory:");
+    try {
+      migrations.slice(0, 2).forEach((migration) => db.exec(migration));
+      const snapshot = { ...request("korey-1"), futureField: true };
+      db.prepare(`INSERT INTO korey_operations
+        (id, bb_thread_id, status, request_json, request_hash, created_at, updated_at)
+        VALUES (?, ?, 'reconcile-required', ?, ?, 1, 1)`).run(
+        "korey-1",
+        "thread-test",
+        JSON.stringify(snapshot),
+        snapshot.payloadHash,
+      );
+      migrations.slice(2).forEach((migration) => db.exec(migration));
+      expect(getOperation(db, "korey-1")).toMatchObject({
+        request: snapshot,
+        requestVersion: 1,
+        dispatchedText: null,
+      });
+      db.prepare(
+        "UPDATE korey_operations SET request_json = ?, request_version = 2",
+      ).run(JSON.stringify({ action: "future-action" }));
+      expect(listUnresolvedOperations(db, "thread-test", null)).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it("selects unresolved operations from either origin or destination without duplicates", () => {
     const db = new Database(":memory:");
     try {

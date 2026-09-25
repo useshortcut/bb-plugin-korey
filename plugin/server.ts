@@ -205,15 +205,24 @@ function boundedText(text: string): { text: string; truncated: boolean } {
   };
 }
 
+// Keep history readable across approval schema versions. Missing future fields
+// are shown as unknown; this projection is never used to authorize a write.
+const storedRequestSummarySchema = z.object({
+  action: z.enum(["create", "update", "unknown"]).catch("unknown"),
+  storyId: z.string().nullable().catch(null),
+  instruction: z.string().catch("[Unavailable in this request version]"),
+  attachments: z.array(z.unknown()).catch([]),
+  koreyOrganization: z.string().catch("Unknown"),
+});
+
 function operationView(operation: OperationRecord) {
+  const summary = storedRequestSummarySchema.parse(operation.request);
   return {
     operationId: operation.id,
     status: operation.status,
-    action: operation.request.action,
-    storyId: operation.request.storyId,
-    instruction: operation.request.instruction,
-    attachments: operation.request.attachments,
-    koreyOrganization: operation.request.koreyOrganization,
+    ...summary,
+    requestVersion: operation.requestVersion,
+    requestHash: operation.requestHash,
     koreyThreadId: operation.koreyThreadId,
     koreyMessageId: operation.koreyMessageId,
     attachmentIds: operation.attachmentIds,
@@ -251,8 +260,8 @@ function unresolvedOperationSummaries(
       return {
         operationId: operation.id,
         status: operation.status,
-        action: operation.request.action,
-        storyId: operation.request.storyId,
+        action: storedRequestSummarySchema.parse(operation.request).action,
+        storyId: storedRequestSummarySchema.parse(operation.request).storyId,
         createdAt: operation.createdAt,
       };
     },
@@ -853,7 +862,12 @@ export default async function plugin(bb: BbPluginApi) {
     );
   }
 
-  function shortcutPrompt(request: ShortcutApprovalPayload): string {
+  function shortcutPrompt(
+    request: Pick<
+      ShortcutApprovalPayload,
+      "action" | "operationId" | "storyId" | "instruction"
+    >,
+  ): string {
     return request.action === "create"
       ? [
           "The user approved this external write through bb's confirmation UI.",
@@ -871,6 +885,26 @@ export default async function plugin(bb: BbPluginApi) {
           "",
           request.instruction,
         ].join("\n");
+  }
+
+  function storedOperationPrompt(operation: OperationRecord): string {
+    if (operation.dispatchedText !== null) return operation.dispatchedText;
+    // Original journals predate dispatched_text. Preserve the version 1 prompt
+    // and validate only the fields it used, independent of today's approval UI.
+    const legacy = z
+      .object({
+        operationId: z.string(),
+        action: z.enum(["create", "update"]),
+        storyId: z.string().nullable(),
+        instruction: z.string(),
+      })
+      .safeParse(operation.request);
+    if (operation.requestVersion !== 1 || !legacy.success) {
+      throw new Error(
+        "This operation has no recorded message text and its request version cannot be reconciled by this plugin. Inspect Korey and Shortcut, then use operation resolve.",
+      );
+    }
+    return shortcutPrompt(legacy.data);
   }
 
   function messageMatchesRequest(
@@ -921,7 +955,7 @@ export default async function plugin(bb: BbPluginApi) {
     return findMessageByRequest(
       api,
       operation.koreyThreadId,
-      shortcutPrompt(operation.request),
+      storedOperationPrompt(operation),
       operation.attachmentIds,
       signal,
     );
@@ -974,6 +1008,7 @@ export default async function plugin(bb: BbPluginApi) {
   async function executeApprovedOperation(
     api: KoreyClient,
     operation: OperationRecord,
+    request: ShortcutApprovalPayload,
     prepared: readonly PreparedAttachment[],
     signal?: AbortSignal,
   ): Promise<OperationRecord> {
@@ -991,15 +1026,14 @@ export default async function plugin(bb: BbPluginApi) {
         api,
         operation.bbThreadId,
         signal,
-        operation.request.destination.kind === "new-private-thread"
+        request.destination.kind === "new-private-thread"
           ? {
-              previousGeneration:
-                operation.request.destination.mappingGeneration,
+              previousGeneration: request.destination.mappingGeneration,
               marker: operation.id,
             }
           : undefined,
       );
-      if (!approvedMappingMatches(operation.request, linked.mapping)) {
+      if (!approvedMappingMatches(request, linked.mapping)) {
         throw new Error(
           "The Korey destination changed after approval; review and approve a new request.",
         );
@@ -1016,9 +1050,8 @@ export default async function plugin(bb: BbPluginApi) {
       koreyThread = await api.getThread(linked.mapping.koreyThreadId, signal);
       assertPrivateThread(koreyThread);
       if (
-        operation.request.destination.kind === "linked-private-thread" &&
-        koreyThread.updated_at !==
-          operation.request.destination.koreyThreadRevision
+        request.destination.kind === "linked-private-thread" &&
+        koreyThread.updated_at !== request.destination.koreyThreadRevision
       ) {
         throw new Error(
           "The Korey conversation changed after approval; review and approve a new request.",
@@ -1094,7 +1127,7 @@ export default async function plugin(bb: BbPluginApi) {
 
     // Recovery in a previous BB thread can change this conversation's journal
     // while preparation awaits Korey, outside the current BB-thread lock.
-    if (!unresolvedOperationsStillMatch(operation.request)) {
+    if (!unresolvedOperationsStillMatch(request)) {
       transitionOperation(db, {
         id: operation.id,
         from: "attachments-uploaded",
@@ -1108,15 +1141,17 @@ export default async function plugin(bb: BbPluginApi) {
         `Korey operation ${operation.id} sent no Shortcut message because unresolved operation state changed. Review and approve a new request.`,
       );
     }
+    const dispatchedText = shortcutPrompt(request);
     transitionOperation(db, {
       id: operation.id,
       from: "attachments-uploaded",
       to: "message-dispatching",
+      patch: { dispatchedText },
     });
     try {
       const sent = await api.sendMessage(
         koreyThread.id,
-        shortcutPrompt(operation.request),
+        dispatchedText,
         signal,
         attachmentIds,
       );
@@ -1303,7 +1338,13 @@ export default async function plugin(bb: BbPluginApi) {
         to: "approved",
         patch: { approvedAt: Date.now(), error: null },
       });
-      return executeApprovedOperation(api, operation, prepared, signal);
+      return executeApprovedOperation(
+        api,
+        operation,
+        request,
+        prepared,
+        signal,
+      );
     });
   }
 
@@ -1788,10 +1829,8 @@ export default async function plugin(bb: BbPluginApi) {
       .object({ limit: z.number().int().min(1).max(50).default(20) })
       .strict(),
     async execute({ limit }, context) {
-      return JSON.stringify(
+      return executeJsonTool(async () =>
         listOperations(db, context.threadId, limit).map(operationView),
-        null,
-        2,
       );
     },
   });

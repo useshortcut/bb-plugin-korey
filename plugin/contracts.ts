@@ -16,7 +16,7 @@ export const unresolvedShortcutOperationSchema = z
   .object({
     operationId: z.string().regex(/^korey-[a-f0-9-]+$/u),
     status: z.enum(["awaiting-response", "reconcile-required"]),
-    action: z.enum(["create", "update"]),
+    action: z.enum(["create", "update", "unknown"]),
     storyId: z.string().nullable(),
     createdAt: z.number().int().nonnegative(),
   })
