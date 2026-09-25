@@ -16,6 +16,17 @@ bb korey ask "Summarize the Sentry errors introduced in our latest release"
 bb korey ask "Review these files" --file spec.md --file screenshot.png
 ```
 
+If a message begins with `-`, put options before `--`, then the message:
+
+```sh
+bb korey ask --json -- "- Review this proposal"
+```
+
+Consultation results include `responseTruncated`. If it is `true`, open the
+returned `appUrl` to read the full response, or retrieve messages with
+`bb korey show <korey-thread-id>` and follow pagination. An empty `files` list
+is equivalent to omitting attachments.
+
 Link an existing private Korey conversation when needed:
 
 ```sh

@@ -37,9 +37,15 @@ entries using BB 0.40.0 and 0.43.4. This checks that users can build the plugin 
 a managed Git install, without relying on development dependencies or code
 generation during installation. It does not publish or deploy anything.
 
-The development SDK is pinned to 0.5.9 for BB 0.43.4; the runtime contract requires
-SDK 0.4.10 or newer. Runtime imports that BB does not provide belong in
-`dependencies`; SDK types, React, and development tools belong in `devDependencies`.
+The development SDK is pinned to 0.5.9 for BB 0.43.4. Build checks do not
+validate live approval forms, host RPC, or other experimental runtime surfaces
+on BB 0.40.0. The test suite exercises the SDK 0.5.9 backend and UI harnesses;
+live compatibility with another BB version needs a separate smoke test.
+macOS descriptor validation runs with mocked `lsof` output on Linux; CI does
+not run a real macOS host.
+
+Runtime imports that BB does not provide belong in `dependencies`; SDK types,
+React, and development tools belong in `devDependencies`.
 
 Local installations of the earlier test package use a different plugin
 identity and storage namespace. Reconfigure the token and relink conversations
@@ -91,14 +97,34 @@ bun run generate:openapi
 git diff -- korey.openapi.json generated/korey-api.ts
 ```
 
-Generation explicitly preserves OpenAPI's default of allowing additional
-properties when a schema omits `additionalProperties`. Schemas that set it to
-`false` remain strict.
+Generation preserves OpenAPI's default of allowing additional properties when
+`additionalProperties` is omitted. Explicitly closed schemas stay strict in the
+generated file. The client derives tolerant response schemas from that file:
+it ignores extra fields and displays unknown content blocks as placeholders
+with Korey links. Known required fields remain validated. Request and approval
+schemas stay strict.
+
+`check:openapi` compares generated code with the pinned local spec. It does not
+fetch Korey's live spec or fail just because Korey changes its public API.
 
 Mutation POSTs are never retried automatically and never follow redirects.
-Redirects and undocumented response statuses during message dispatch leave the
-operation available for reconciliation. Response polling uses bounded backoff
-for transient network errors, `429`, and `5xx` responses and honors `Retry-After`.
+Only a documented rejection for the specific endpoint is classified as a
+definite failure. For example, the pinned message endpoint does not list `400`
+or `422`; those responses remain uncertain until inspected. A status code alone
+does not establish that a write had no effect. Response polling uses bounded
+backoff for transient network errors, `429`, and `5xx`, and honors `Retry-After`.
+
+Journals retain versioned approval snapshots and the exact dispatched text.
+Reading history does not validate it against the current approval schema;
+reconciliation uses recorded text, with a version 1 fallback for older journals.
+Unresolved operations can be closed locally through the confirmed
+`operation resolve` flow described in [usage](usage.md).
+
+Live Korey behavior still needs verification for readiness revision updates and
+verbatim message storage. Mapping recovery first searches the marker, then scans
+owned threads if search misses; each traversal stops after 20 pages. The public
+spec retrieved on 2026-09-24 lists `threads:read` and `threads:write`; the README
+uses those names, but token creation was not tested against an account.
 
 ## Distribution
 

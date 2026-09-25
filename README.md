@@ -42,11 +42,13 @@ your Korey workspace. Story approvals use the BB desktop or web app.
 
 ## Get started
 
-Requires BB 0.40.0 or newer and a Korey account.
+Requires a Korey account. Use BB 0.43.4 or newer; production builds are also
+checked with BB 0.40.0. See [compatibility and validation](docs/development.md)
+for the limits of those checks.
 
 1. Connect the services you want to use in [Korey](https://korey.ai). See
    [Korey’s connector guides](https://korey.ai/docs/connectors/overview) for setup.
-2. Create a Korey personal access token with `threads:read:own` and
+2. Create a Korey personal access token with `threads:read` and
    `threads:write` scopes.
 3. Install the plugin:
 
