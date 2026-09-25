@@ -222,6 +222,87 @@ afterEach(async () => {
 });
 
 describe("Korey plugin conversations", () => {
+  it.each(["agent", "cli"])(
+    "reports consultation truncation through the %s interface",
+    async (mode) => {
+      const calls = stubFetch([
+        jsonResponse(koreyThread()),
+        jsonResponse({ message_id: "sent" }, 201),
+        completeResponse(`${"x".repeat(65_535)}🚀 more text`),
+      ]);
+      const host = await loadPlugin();
+      storeMapping(host);
+      const result =
+        mode === "agent"
+          ? await host.harness.callAgentTool("korey_ask", {
+              prompt: "Summarize",
+              files: [],
+            })
+          : (
+              await host.harness.runCli([
+                "ask",
+                "Summarize",
+                "--bb-thread",
+                "thread-test",
+                "--json",
+              ])
+            ).stdout;
+      const value = JSON.parse(String(result));
+      expect(value).toMatchObject({
+        responseTruncated: true,
+        appUrl: koreyThread().app_url,
+      });
+      expect(value.response).toContain(
+        "open the Korey conversation to read the full response",
+      );
+      expect(value.response).not.toContain("\uFFFD");
+      expect(Buffer.byteLength(value.response)).toBeLessThan(66_000);
+      expect(calls).toHaveLength(3);
+    },
+  );
+
+  it.each([false, true])(
+    "sends consultation attachments once and reconciles ambiguous dispatch (%s)",
+    async (reconcile) => {
+      const attachmentId = "7c1d7259-9c10-4e68-98ef-227fe57aad91";
+      const responses: StubbedFetchResult[] = [
+        jsonResponse(koreyThread()),
+        jsonResponse([{ id: attachmentId, filename: "spec.md" }], 201),
+        reconcile
+          ? new Error("connection reset")
+          : jsonResponse({ message_id: "sent" }, 201),
+      ];
+      const calls = stubFetch(responses);
+      if (reconcile)
+        responses.push(() =>
+          messagePage([
+            userMessage(JSON.parse(String(calls[2]?.init?.body)).text, "sent", [
+              attachmentId,
+            ]),
+          ]),
+        );
+      responses.push(completeResponse("Reviewed the file"));
+      const host = await loadPlugin();
+      storeMapping(host);
+      const result = await host.harness.callAgentTool("korey_ask", {
+        prompt: "Review this specification",
+        files: ["spec.md"],
+      });
+      expect(JSON.parse(String(result))).toMatchObject({
+        response: "Reviewed the file",
+        responseTruncated: false,
+      });
+      expect(calls[1]?.init?.body).toBeInstanceOf(FormData);
+      expect(JSON.parse(String(calls[2]?.init?.body))).toMatchObject({
+        text: expect.stringContaining("This request is consultation-only."),
+        attachment_ids: [attachmentId],
+      });
+      expect(calls.filter((call) => call.init?.method === "POST")).toHaveLength(
+        2,
+      );
+    },
+  );
+
   it.each([false, true])(
     "reconciles mapping markers across pages with owned-list fallback (%s)",
     async (fallback) => {
@@ -465,6 +546,40 @@ describe("Korey plugin conversations", () => {
 });
 
 describe("Korey Shortcut approval and recovery", () => {
+  it("normalizes an update Story ID and sends only the approved update instruction", async () => {
+    const calls = stubFetch([
+      identityResponse(),
+      jsonResponse(koreyThread()),
+      jsonResponse(koreyThread()),
+      jsonResponse({ message_id: "sent" }, 201),
+      completeResponse("Updated SC-123"),
+    ]);
+    const host = await loadPlugin();
+    storeMapping(host);
+    const pending = host.harness.callAgentTool("korey_shortcut_change", {
+      action: "update",
+      storyId: " SC-123 ",
+      instruction: " Add the reviewed criterion. ",
+      files: [],
+    });
+    const approval = await waitForApproval(host);
+    expect(approval.payload).toMatchObject({
+      action: "update",
+      storyId: "sc-123",
+      instruction: "Add the reviewed criterion.",
+      attachments: [],
+    });
+    approve(host, approval);
+    expect(JSON.parse(String(await pending))).toMatchObject({
+      status: "korey-complete",
+    });
+    const text: string = JSON.parse(String(calls[3]?.init?.body)).text;
+    expect(text).toContain("Update Shortcut Story sc-123.");
+    expect(text).toContain("Preserve unrelated fields.");
+    expect(text).toContain("Add the reviewed criterion.");
+    expect(text).not.toContain("Create exactly one Shortcut Story");
+  });
+
   it.each(["active", "waiting", "error", "interrupted"])(
     "rejects a %s conversation before opening approval",
     async (state) => {

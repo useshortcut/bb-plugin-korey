@@ -6,7 +6,6 @@ export const MAX_PDF_ATTACHMENT_BYTES = Math.floor(2.5 * 1024 * 1024);
 export const MAX_TEXT_ATTACHMENT_BYTES = Math.floor(0.5 * 1024 * 1024);
 export const filePathsSchema = z
   .array(z.string().trim().min(1))
-  .min(1)
   .max(5)
   .superRefine((paths, context) => {
     const seen = new Set<string>();

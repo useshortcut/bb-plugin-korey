@@ -145,6 +145,7 @@ interface LinkedThread {
   created: boolean;
   koreyThread: KoreyThread;
   responseText: string;
+  responseTruncated: boolean;
 }
 
 interface PreparedAttachment {
@@ -205,7 +206,7 @@ function boundedText(text: string): { text: string; truncated: boolean } {
     .toString("utf8")
     .replace(/\uFFFD$/u, "");
   return {
-    text: `${prefix}\n\n[Response truncated by bb-plugin-korey]`,
+    text: `${prefix}\n\n[Response truncated by bb-plugin-korey; open the Korey conversation to read the full response.]`,
     truncated: true,
   };
 }
@@ -784,10 +785,12 @@ export default async function plugin(bb: BbPluginApi) {
           `Korey accepted consultation ${consultationId} as message ${messageId}, but response polling did not complete. Inspect the linked thread instead of resending automatically. ${error instanceof Error ? error.message : String(error)}`,
         );
       }
+      const response = boundedText(formatKoreyMessages(messages));
       return {
         created: linked.created,
         koreyThread,
-        responseText: boundedText(formatKoreyMessages(messages)).text,
+        responseText: response.text,
+        responseTruncated: response.truncated,
       };
     });
   }
@@ -1640,6 +1643,7 @@ export default async function plugin(bb: BbPluginApi) {
             koreyThreadId: result.koreyThread.id,
             appUrl: result.koreyThread.app_url,
             response: result.responseText,
+            responseTruncated: result.responseTruncated,
           };
           return cliOutput(
             parsed.json,
@@ -1918,6 +1922,7 @@ export default async function plugin(bb: BbPluginApi) {
           koreyThreadId: result.koreyThread.id,
           appUrl: result.koreyThread.app_url,
           response: result.responseText,
+          responseTruncated: result.responseTruncated,
         };
       });
     },
