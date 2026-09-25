@@ -120,13 +120,15 @@ invalidates the pending confirmation; the form expires after ten minutes.
 
 Important operation states:
 
-| State                | Meaning                                                             |
-| -------------------- | ------------------------------------------------------------------- |
-| `requested`          | The user’s request is recorded and preparation is about to start.   |
-| `awaiting-response`  | Korey recorded the message; response polling can resume safely.     |
-| `korey-complete`     | Korey finished the turn; the Shortcut result still requires review. |
-| `definite-failure`   | No Shortcut-intended message was dispatched.                        |
-| `reconcile-required` | Message dispatch may have succeeded; never resend automatically.    |
+| State                | Meaning                                                                                   |
+| -------------------- | ----------------------------------------------------------------------------------------- |
+| `requested`          | The user’s request is recorded and preparation is about to start.                         |
+| `awaiting-response`  | Korey recorded the message; response polling can resume safely.                           |
+| `korey-complete`     | Korey finished the turn; the Shortcut result still requires review.                       |
+| `manually-resolved`  | You confirmed local closeout after inspection; remote work is not verified or cancelled.  |
+| `definite-failure`   | No Shortcut-intended message was dispatched.                                              |
+| `reconcile-required` | Message dispatch may have succeeded; never resend automatically.                          |
+| `cancelled`          | A pending approval from an older plugin version was cancelled on reload without dispatch. |
 
 ## Safety Model
 
