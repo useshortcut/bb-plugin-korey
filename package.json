@@ -2,7 +2,7 @@
   "name": "bb-plugin-korey",
   "version": "0.1.0",
   "private": true,
-  "description": "Ask Korey to work with your connected tools from any BB harness.",
+  "description": "Ask Korey to work with your connected tools from any bb harness.",
   "license": "MIT",
   "author": "Shortcut",
   "type": "module",
@@ -22,7 +22,7 @@
   },
   "bb": {
     "name": "Korey",
-    "description": "Ask Korey to work with your connected tools from any BB harness.",
+    "description": "Ask Korey to work with your connected tools from any bb harness.",
     "branding": {
       "icon": "./assets/korey-mark.svg",
       "logo": {

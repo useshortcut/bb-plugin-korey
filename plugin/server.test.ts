@@ -33,7 +33,7 @@ function jsonResponse(value: unknown, status = 200): Response {
 function identityResponse(): Response {
   return jsonResponse({
     sub: "user-sub",
-    name: "BB User",
+    name: "bb User",
     email: "user@example.com",
     korey_user_id: 42,
     korey_organization_id: 7,
@@ -49,11 +49,11 @@ function koreyThread(
 ) {
   return {
     id,
-    name: "BB: Shape the feature",
+    name: "bb: Shape the feature",
     state,
     is_private: true,
     archived: false,
-    owner: { id: "korey-user-1", name: "BB User" },
+    owner: { id: "korey-user-1", name: "bb User" },
     created_at: "2026-08-21T12:00:00.000Z",
     updated_at: updatedAt,
     app_url: `https://app.korey.ai/threads/${id}`,
@@ -293,7 +293,7 @@ describe("Korey plugin conversations", () => {
       const marker = "11111111-1111-4111-8111-111111111111";
       const matched = {
         ...koreyThread(),
-        name: `BB: Recovered [bb-korey:${marker}]`,
+        name: `bb: Recovered [bb-korey:${marker}]`,
       };
       const page = (data: unknown[], after: string | null, more: boolean) =>
         jsonResponse({
@@ -348,7 +348,7 @@ describe("Korey plugin conversations", () => {
       const marker = "11111111-1111-4111-8111-111111111111";
       const matches = ["one", "two"].map((id) => ({
         ...koreyThread(id),
-        name: `BB: [bb-korey:${marker}]`,
+        name: `bb: [bb-korey:${marker}]`,
       }));
       const responses =
         problem === "duplicate"
@@ -443,7 +443,7 @@ describe("Korey plugin conversations", () => {
     const createBody = JSON.parse(String(calls[0]?.init?.body));
     expect(createBody).toMatchObject({ is_private: true });
     expect(createBody.name).toMatch(
-      /^BB: Shape the feature \[bb-korey:[a-f0-9-]+\]$/u,
+      /^bb: Shape the feature \[bb-korey:[a-f0-9-]+\]$/u,
     );
     expect(JSON.parse(String(calls[2]?.init?.body)).text).toContain(
       "This request is consultation-only.",
@@ -1086,11 +1086,11 @@ describe("Korey Shortcut requests and recovery", () => {
       expect(host.harness.pendingInteractions).toHaveLength(0);
       const sentBody = JSON.parse(String(calls[3]?.init?.body));
       expect(sentBody.text).toContain(
-        `BB operation reference: ${request.operationId}`,
+        `bb operation reference: ${request.operationId}`,
       );
       expect(sentBody.text).toContain("Create exactly one Shortcut Story");
       expect(sentBody.text).toContain(
-        "The user requested this Shortcut change from BB.",
+        "The user requested this Shortcut change from bb.",
       );
       expect(sentBody.text).not.toContain("confirmation UI");
       expect(calls).toHaveLength(5);
@@ -1192,7 +1192,7 @@ describe("Korey Shortcut requests and recovery", () => {
     });
   });
 
-  it.each(["legacy", "recorded"])(
+  it.each(["legacy", "recorded", "recorded-uppercase"])(
     "reconciles only exact text and attachments from %s journals",
     async (journal) => {
       const attachmentId = "7c1d7259-9c10-4e68-98ef-227fe57aad91";
@@ -1219,18 +1219,26 @@ describe("Korey Shortcut requests and recovery", () => {
       const request = recordedRequest(host);
 
       const sentBody = JSON.parse(String(calls[4]?.init?.body));
-      if (journal === "legacy") {
-        sentBody.text = sentBody.text.replace(
-          "The user requested this Shortcut change from BB.",
-          "The user approved this external write through bb's confirmation UI.",
-        );
+      if (journal !== "recorded") {
+        const historicalProductName = "bb".toUpperCase();
+        sentBody.text = sentBody.text
+          .replace(
+            "bb operation reference:",
+            `${historicalProductName} operation reference:`,
+          )
+          .replace(
+            "The user requested this Shortcut change from bb.",
+            journal === "legacy"
+              ? "The user approved this external write through bb's confirmation UI."
+              : `The user requested this Shortcut change from ${historicalProductName}.`,
+          );
       }
       // Reconciliation uses the recorded bytes even if a later approval schema
       // has changed. Historical records must remain inspectable as well.
       host.bb.storage
         .database()
         .prepare(
-          "UPDATE korey_operations SET request_json = ?, request_version = ?, dispatched_text = CASE WHEN ? = 'legacy' THEN NULL ELSE dispatched_text END WHERE id = ?",
+          "UPDATE korey_operations SET request_json = ?, request_version = ?, dispatched_text = ? WHERE id = ?",
         )
         .run(
           JSON.stringify(
@@ -1239,7 +1247,7 @@ describe("Korey Shortcut requests and recovery", () => {
               : { action: "future-action" },
           ),
           journal === "legacy" ? 1 : 2,
-          journal,
+          journal === "legacy" ? null : sentBody.text,
           request.operationId,
         );
       const history = await host.harness.callAgentTool(
@@ -1256,7 +1264,7 @@ describe("Korey Shortcut requests and recovery", () => {
       responses.push(
         messagePage([
           userMessage(
-            `Please investigate ${request.operationId}. BB operation reference: ${request.operationId}`,
+            `Please investigate ${request.operationId}. bb operation reference: ${request.operationId}`,
             "diagnostic-message",
           ),
         ]),
@@ -1457,7 +1465,7 @@ it("registers consultation, direct writes, and operation recovery surfaces", asy
   expect(host.harness.registrations.cli?.name).toBe("korey");
   await expect(host.harness.runCli(["status"])).resolves.toEqual({
     exitCode: 0,
-    stdout: "Authenticated as BB User in example.",
+    stdout: "Authenticated as bb User in example.",
     stderr: "",
   });
 });

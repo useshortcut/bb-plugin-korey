@@ -1,14 +1,14 @@
-# Using Korey from BB
+# Using Korey from bb
 
 For setup and example requests, start with the [README](../README.md).
 Connectors, their permissions, and reauthentication are managed in Korey.
 The plugin uses your [Korey personal access token](https://app.korey.ai/settings/api-tokens)
-to continue private conversations from BB.
+to continue private conversations from bb.
 
 ## CLI and agent tools
 
 Use the CLI to ask Korey to research your connected tools, answer questions, or
-prepare a draft. The same requests are available to every BB harness through the
+prepare a draft. The same requests are available to every bb harness through the
 plugin’s agent tools:
 
 ```sh
@@ -102,7 +102,7 @@ After inspecting Korey and Shortcut, close an unresolved operation with a note:
 bb korey operation resolve <operation-id> "Verified SC-123 contains the requested change"
 ```
 
-BB displays the operation and note for your confirmation. This closeout form is
+bb displays the operation and note for your confirmation. This closeout form is
 reserved for unresolved outcomes. Resolution allows later requests to proceed
 and preserves the original request, error, note, and completion time. It does
 not cancel remote work or verify that Korey completed it. A changed operation
@@ -126,12 +126,12 @@ Important operation states:
 `korey_shortcut_change` acts on the user’s explicit create or update request.
 The plugin records the request, destination, and attachment hashes before
 sending it. It checks conversation readiness, privacy, and revision, serializes
-requests within each BB thread, and claims first-use mappings transactionally.
+requests within each bb thread, and claims first-use mappings transactionally.
 If the destination changes during preparation, no Shortcut message is sent.
 
-Unresolved operations from either the current BB thread or the destination
+Unresolved operations from either the current bb thread or the destination
 Korey conversation block a new write, including after a conversation is relinked
-from another BB thread. The plugin checks again before message dispatch. Resume,
+from another bb thread. The plugin checks again before message dispatch. Resume,
 reconcile, or manually resolve the existing operation instead of submitting a
 replacement whose effect may be duplicated.
 
@@ -152,7 +152,7 @@ resending automatically.
 ## File Attachments
 
 Workspace file attachments require Linux, WSL2, or macOS. Paths are relative to
-the BB thread workspace. The host entry opens and checks
+the bb thread workspace. The host entry opens and checks
 the actual file descriptor, rejects absolute paths, traversal, external
 symlinks, non-files, unsupported extensions, duplicate files supplied through
 path aliases or hard links, and files that grow beyond their limit while being

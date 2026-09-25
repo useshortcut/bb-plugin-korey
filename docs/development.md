@@ -33,18 +33,18 @@ the OpenAPI client and checks it for uncommitted changes.
 
 The `validate-production-build` CI job tests production-only installs with
 lifecycle scripts and optional dependencies disabled, then builds all three
-entries using BB 0.40.0 and 0.43.4. This checks that users can build the plugin from
+entries using bb 0.40.0 and 0.43.4. This checks that users can build the plugin from
 a managed Git install, without relying on development dependencies or code
 generation during installation. It does not publish or deploy anything.
 
-The development SDK is pinned to 0.5.9 for BB 0.43.4. Build checks do not
+The development SDK is pinned to 0.5.9 for bb 0.43.4. Build checks do not
 validate live resolution forms, host RPC, or other experimental runtime surfaces
-on BB 0.40.0. The test suite exercises the SDK 0.5.9 backend and UI harnesses;
-live compatibility with another BB version needs a separate smoke test.
+on bb 0.40.0. The test suite exercises the SDK 0.5.9 backend and UI harnesses;
+live compatibility with another bb version needs a separate smoke test.
 macOS descriptor validation runs with mocked `lsof` output on Linux; CI does
 not run a real macOS host.
 
-Runtime imports that BB does not provide belong in `dependencies`; SDK types,
+Runtime imports that bb does not provide belong in `dependencies`; SDK types,
 React, and development tools belong in `devDependencies`.
 
 Local installations of the earlier test package use a different plugin
@@ -54,7 +54,7 @@ after installing `bb-plugin-korey`; no unpublished test state is migrated.
 ## Dependencies
 
 `zod` is the only production dependency. The plugin uses it for API response
-validation and its own contracts. BB supplies the SDK and React at runtime.
+validation and its own contracts. bb supplies the SDK and React at runtime.
 
 The development dependencies support these tasks:
 
@@ -71,18 +71,18 @@ The development dependencies support these tasks:
 - `oxlint`, `oxfmt`, and `typed-openapi` run the lint, formatting, and OpenAPI
   generation scripts.
 
-The remaining 16 UI packages are required by BB 0.43.4's SDK compatibility check:
+The remaining 16 UI packages are required by bb 0.43.4's SDK compatibility check:
 `@pierre/diffs`, the `@radix-ui/*` entries, `class-variance-authority`, `clsx`,
-`sonner`, `tailwind-merge`, and `vaul`. Our code does not import them. BB scaffolds
+`sonner`, `tailwind-merge`, and `vaul`. Our code does not import them. bb scaffolds
 their development dependency pins for app plugins and supplies their runtime
 implementations. Removing these entries makes `bun run check:sdk` fail even when
-the plugin does not use those components. Revisit them if BB makes this check
+the plugin does not use those components. Revisit them if bb makes this check
 depend on the plugin's actual imports.
 
-Keep BB-managed version ranges when updating dependencies; the lockfile can
+Keep bb-managed version ranges when updating dependencies; the lockfile can
 still select newer compatible releases within those ranges. `@types/node`
 tracks Node.js 24, and `@types/better-sqlite3` stays on 7.x to satisfy the SDK's
-peer dependency. Newer SDK and Sonner versions must wait for a compatible BB
+peer dependency. Newer SDK and Sonner versions must wait for a compatible bb
 release.
 
 ## API contract
@@ -133,12 +133,12 @@ uses those names, but token creation was not tested against an account.
 ## Distribution
 
 This repository is intentionally marked `private` in `package.json` to prevent
-accidental npm publication. BB's managed Git installer installs runtime
+accidental npm publication. bb's managed Git installer installs runtime
 dependencies with scripts disabled and builds the server, app, and host
 artifacts itself.
 
 The repository root is the plugin: `package.json` declares the server, app,
-host, and skill entries. No BB checkout, collection manifest, or committed
+host, and skill entries. No bb checkout, collection manifest, or committed
 build output is required. The Git install tracks the default branch; use
 `bb plugin outdated` to inspect updates and `bb plugin update korey` to apply
 one. To pin a particular commit, install

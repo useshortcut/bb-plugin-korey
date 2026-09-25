@@ -51,6 +51,6 @@ jobs:
       - run: bun install --frozen-lockfile --production --omit=optional --ignore-scripts
         env:
           NODE_ENV: production
-      - name: Install BB build CLI
+      - name: Install bb build CLI
         run: bun add --global --ignore-scripts bb-app@${{ matrix.bb }}
       - run: bb plugin build .

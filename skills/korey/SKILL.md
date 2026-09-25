@@ -5,7 +5,7 @@ description: Ask Korey to research connected tools, prepare drafts, or create an
 
 # Ask Korey
 
-Korey provides shared access to its connectors across BB harnesses. Delegate the
+Korey provides shared access to its connectors across bb harnesses. Delegate the
 user’s desired outcome and relevant context to Korey, and let it handle the
 service-specific details using its connector access and workspace conventions.
 Connector setup, credentials, and reauthentication are managed in Korey. If Korey
@@ -18,7 +18,7 @@ Use `korey_ask` for research, analysis, and drafts across the services connected
 Korey. Examples include investigating Sentry errors, understanding LaunchDarkly
 flags, and comparing a plan with existing Shortcut Stories. The plugin asks
 Korey not to modify connected systems. This restriction is prompt-mediated,
-not a technical connector permission boundary. The current BB thread gets a
+not a technical connector permission boundary. The current bb thread gets a
 private Korey conversation on its first request if no conversation is linked.
 
 Use `korey_shortcut_change` when the user asks Korey to create or update a Shortcut
@@ -36,7 +36,7 @@ not supported by this plugin.
 
 Use `korey_status`, `korey_list_threads`, `korey_get_thread`, and
 `korey_link_thread` to inspect Korey and continue an existing private
-conversation. Use `korey_unlink_thread` to remove the current BB-thread mapping
+conversation. Use `korey_unlink_thread` to remove the current bb-thread mapping
 without changing the remote conversation. Follow pagination cursors when a
 result reports `has_more`.
 
@@ -64,6 +64,6 @@ problem before retrying the user’s request.
 For equivalent CLI commands, use `bb korey --help`.
 
 After the user has inspected Korey and Shortcut and requests closeout, run
-`bb korey operation resolve <operation-id> "<inspection result>"`. BB requires
+`bb korey operation resolve <operation-id> "<inspection result>"`. bb requires
 the user's confirmation of the operation and note. `manually-resolved` records
 local closeout; it does not verify completion or cancel work in Korey.

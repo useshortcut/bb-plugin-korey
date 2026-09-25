@@ -300,7 +300,7 @@ export function setLinkedMapping(
           .object({ bb_thread_id: z.string() })
           .parse(owner);
         throw new Error(
-          `Korey thread ${koreyThreadId} is already linked to BB thread ${ownerId}. Unlink it there with bb korey unlink --bb-thread ${ownerId}, then link it here.`,
+          `Korey thread ${koreyThreadId} is already linked to bb thread ${ownerId}. Unlink it there with bb korey unlink --bb-thread ${ownerId}, then link it here.`,
         );
       }
       const now = Date.now();

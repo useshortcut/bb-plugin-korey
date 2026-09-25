@@ -363,12 +363,14 @@ function assertPrivateThread(thread: KoreyThread): void {
   }
 }
 
-function operationMarker(operationId: string): string {
-  return `BB operation reference: ${operationId}`;
+function operationMarker(operationId: string, legacy = false): string {
+  // Version 1 reconciliation requires the original uppercase marker.
+  const productName = legacy ? "bb".toUpperCase() : "bb";
+  return `${productName} operation reference: ${operationId}`;
 }
 
 function consultationMarker(consultationId: string): string {
-  return `BB consultation reference: ${consultationId}`;
+  return `bb consultation reference: ${consultationId}`;
 }
 
 export default async function plugin(bb: BbPluginApi) {
@@ -429,7 +431,7 @@ export default async function plugin(bb: BbPluginApi) {
     const label = thread.title?.trim() || thread.id;
     const suffix = ` [${MAPPING_MARKER_PREFIX}:${marker}]`;
     return (
-      `BB: ${label}`
+      `bb: ${label}`
         .slice(0, 120 - suffix.length)
         .replace(/[\uD800-\uDBFF]$/u, "") + suffix
     );
@@ -871,11 +873,11 @@ export default async function plugin(bb: BbPluginApi) {
   ): string {
     const authorization = legacyApproval
       ? "The user approved this external write through bb's confirmation UI."
-      : "The user requested this Shortcut change from BB.";
+      : "The user requested this Shortcut change from bb.";
     return request.action === "create"
       ? [
           authorization,
-          operationMarker(request.operationId),
+          operationMarker(request.operationId, legacyApproval),
           "Create exactly one Shortcut Story in the connected workspace.",
           "Return the created Story ID and URL. Do not create a duplicate if this operation reference already appears in the conversation.",
           "",
@@ -883,7 +885,7 @@ export default async function plugin(bb: BbPluginApi) {
         ].join("\n")
       : [
           authorization,
-          operationMarker(request.operationId),
+          operationMarker(request.operationId, legacyApproval),
           `Update Shortcut Story ${request.storyId}.`,
           "Preserve unrelated fields. Return the Story ID, URL, and fields changed.",
           "",
@@ -1129,8 +1131,8 @@ export default async function plugin(bb: BbPluginApi) {
       });
     }
 
-    // Recovery in a previous BB thread can change this conversation's journal
-    // while preparation awaits Korey, outside the current BB-thread lock.
+    // Recovery in a previous bb thread can change this conversation's journal
+    // while preparation awaits Korey, outside the current bb-thread lock.
     try {
       assertNoUnresolvedOperations(operation.bbThreadId, koreyThread.id);
       signal?.throwIfAborted();
@@ -1790,7 +1792,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: "korey_ask",
     description:
-      "Ask Korey to research connected tools, answer questions, or prepare drafts using its existing connector access. Continues the private Korey conversation linked to this BB thread. The plugin instructs Korey not to modify connected systems.",
+      "Ask Korey to research connected tools, answer questions, or prepare drafts using its existing connector access. Continues the private Korey conversation linked to this bb thread. The plugin instructs Korey not to modify connected systems.",
     instructions:
       'For "Ask Korey ..." research and drafting requests, delegate the desired outcome and relevant context to Korey. It uses the services connected in Korey, such as Shortcut, Sentry, and LaunchDarkly. Use korey_shortcut_change for Shortcut Story creation or updates; that tool sends the user’s requested change directly. The consultation restriction is a prompt instruction, not a connector permission boundary.',
     parameters: z
@@ -1914,6 +1916,6 @@ export default async function plugin(bb: BbPluginApi) {
     ],
     skills: ["korey"],
     instructions:
-      'Korey brings its connected services to every BB harness. For "Ask Korey ..." requests, delegate the user’s goal and context to Korey. Use korey_ask for connector research, analysis, and drafts, and korey_shortcut_change for user-requested Shortcut Story creation or updates. Connector setup and reauthentication happen in Korey. Consultation is prompt-mediated; other connector writes are not supported by this plugin. Never replace or automatically retry an ambiguous operation; inspect, resume, or reconcile its existing operation ID.',
+      'Korey brings its connected services to every bb harness. For "Ask Korey ..." requests, delegate the user’s goal and context to Korey. Use korey_ask for connector research, analysis, and drafts, and korey_shortcut_change for user-requested Shortcut Story creation or updates. Connector setup and reauthentication happen in Korey. Consultation is prompt-mediated; other connector writes are not supported by this plugin. Never replace or automatically retry an ambiguous operation; inspect, resume, or reconcile its existing operation ID.',
   }));
 }
