@@ -42,9 +42,8 @@ connectors and permissions in your Korey workspace.
 
 ## Get started
 
-Requires a Korey account. Use bb 0.43.4 or newer; production builds are also
-checked with bb 0.40.0. See [compatibility and validation](docs/development.md)
-for the limits of those checks.
+Requires a Korey account and bb 0.43.4 or newer. See
+[compatibility and validation](docs/development.md) for the limits of those checks.
 
 1. Connect the services you want to use in [Korey](https://korey.ai). See
    [Korey’s connector guides](https://korey.ai/docs/connectors/overview) for setup.

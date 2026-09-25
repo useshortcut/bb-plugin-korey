@@ -33,14 +33,15 @@ the OpenAPI client and checks it for uncommitted changes.
 
 The `validate-production-build` CI job tests production-only installs with
 lifecycle scripts and optional dependencies disabled, then builds all three
-entries using bb 0.40.0 and 0.43.4. This checks that users can build the plugin from
+entries using bb 0.43.4. This checks that users can build the plugin from
 a managed Git install, without relying on development dependencies or code
 generation during installation. It does not publish or deploy anything.
 
-The development SDK is pinned to 0.5.9 for bb 0.43.4. Build checks do not
-validate live resolution forms, host RPC, or other experimental runtime surfaces
-on bb 0.40.0. The test suite exercises the SDK 0.5.9 backend and UI harnesses;
-live compatibility with another bb version needs a separate smoke test.
+The manifest requires bb 0.43.4 or newer and plugin SDK 0.5.9 or newer. The
+development SDK is pinned to 0.5.9 for bb 0.43.4. The test suite exercises the
+SDK 0.5.9 backend and UI harnesses; live compatibility with another bb version
+needs a separate smoke test, including resolution forms, host RPC, and other
+experimental runtime surfaces.
 macOS descriptor validation runs with mocked `lsof` output on Linux; CI does
 not run a real macOS host.
 

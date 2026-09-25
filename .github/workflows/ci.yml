@@ -35,10 +35,6 @@ jobs:
       - run: bun run ${{ matrix.task }}
 
   validate-production-build:
-    strategy:
-      fail-fast: false
-      matrix:
-        bb: [0.40.0, 0.43.4]
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -52,5 +48,5 @@ jobs:
         env:
           NODE_ENV: production
       - name: Install bb build CLI
-        run: bun add --global --ignore-scripts bb-app@${{ matrix.bb }}
+        run: bun add --global --ignore-scripts bb-app@0.43.4
       - run: bb plugin build .
