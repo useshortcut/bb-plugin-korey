@@ -559,6 +559,14 @@ export default async function plugin(bb: BbPluginApi) {
     if (mapping.state !== "reserved" || mapping.marker === null) {
       throw new Error(`Stored Korey mapping for ${bbThreadId} is invalid`);
     }
+    let name: string;
+    try {
+      name = await bbThreadName(bbThreadId, mapping.marker);
+      signal?.throwIfAborted();
+    } catch (error) {
+      rejectMappingCreate(db, bbThreadId, mapping.generation, "reserved");
+      throw error;
+    }
     if (!beginMappingCreate(db, bbThreadId, mapping.generation)) {
       const current = getMapping(db, bbThreadId);
       if (current?.state === "ready" && current.koreyThreadId !== null) {
@@ -569,7 +577,7 @@ export default async function plugin(bb: BbPluginApi) {
     try {
       const created = await api.createEmptyThread(
         {
-          name: await bbThreadName(bbThreadId, mapping.marker),
+          name,
           isPrivate: true,
         },
         signal,

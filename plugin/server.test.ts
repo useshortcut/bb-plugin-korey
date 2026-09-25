@@ -206,6 +206,70 @@ afterEach(async () => {
 });
 
 describe("Korey plugin conversations", () => {
+  it.each([
+    ["consultation", "sdk failure"],
+    ["consultation", "cancellation"],
+    ["write", "sdk failure"],
+    ["write", "cancellation"],
+  ])(
+    "releases the mapping after %s preparation ends with %s before dispatch",
+    async (mode, failure) => {
+      const responses: StubbedFetchResult[] =
+        mode === "write" ? [identityResponse()] : [];
+      const calls = stubFetch(responses);
+      const host = await loadPlugin();
+      const db = host.bb.storage.database();
+      const controller = new AbortController();
+      let preparationState: string | undefined;
+      host.harness.inspection.sdk.stub("threads.get", async () => {
+        preparationState = getMapping(db, "thread-test")?.state;
+        if (failure === "sdk failure")
+          throw new Error("Thread lookup unavailable");
+        controller.abort();
+        return makeThreadResponse({ id: "thread-test", title: "Retry safely" });
+      });
+      const tool = mode === "write" ? "korey_shortcut_change" : "korey_ask";
+      const input =
+        mode === "write"
+          ? { action: "create", instruction: "Create one Story." }
+          : { prompt: "Review the draft." };
+      const failed = await host.harness.callAgentTool(tool, input, {
+        signal: controller.signal,
+      });
+      expect(failed).toMatchObject({ isError: true });
+      expect(JSON.stringify(failed)).not.toContain("unknown outcome");
+      expect(preparationState).toBe("reserved");
+      expect(getMapping(db, "thread-test")).toMatchObject({
+        state: "unlinked",
+        marker: null,
+        koreyThreadId: null,
+      });
+      expect(
+        listOperations(db, "thread-test", 20).map(({ status }) => status),
+      ).toEqual(mode === "write" ? ["definite-failure"] : []);
+      expect(calls.map(({ init }) => init?.method)).toEqual(
+        mode === "write" ? ["GET"] : [],
+      );
+
+      host.harness.inspection.sdk.stub("threads.get", async () =>
+        makeThreadResponse({ id: "thread-test", title: "Retry safely" }),
+      );
+      responses.push(
+        ...(mode === "write" ? [identityResponse()] : []),
+        jsonResponse({ thread_id: "korey-thread-1", message_id: null }, 201),
+        jsonResponse(koreyThread()),
+        jsonResponse({ message_id: "sent" }, 201),
+        completeResponse("Done"),
+      );
+      const retried = await host.harness.callAgentTool(tool, input);
+      expect(JSON.parse(String(retried)).response).toContain("Done");
+      expect(getMapping(db, "thread-test")?.state).toBe("ready");
+      expect(calls.filter(({ init }) => init?.method === "POST")).toHaveLength(
+        2,
+      );
+    },
+  );
+
   it.each(["agent", "cli"])(
     "reports consultation truncation through the %s interface",
     async (mode) => {

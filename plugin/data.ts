@@ -255,6 +255,7 @@ export function rejectMappingCreate(
   db: Db,
   bbThreadId: string,
   generation: number,
+  from: "reserved" | "create-dispatching" = "create-dispatching",
 ): void {
   const changed = db
     .prepare(
@@ -262,9 +263,9 @@ export function rejectMappingCreate(
           SET korey_thread_id = NULL, marker = NULL, state = 'unlinked',
               updated_at = ?
         WHERE bb_thread_id = ? AND generation = ?
-          AND state = 'create-dispatching'`,
+          AND state = ?`,
     )
-    .run(Date.now(), bbThreadId, generation).changes;
+    .run(Date.now(), bbThreadId, generation, from).changes;
   if (changed !== 1) {
     throw new Error("Korey mapping changed while creation was rejected");
   }
