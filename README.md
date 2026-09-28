@@ -92,6 +92,10 @@ unknown outcome, the plugin provides recovery steps before another change is sen
 You can also link an existing private Korey conversation and continue work you
 started there.
 
+Consultations are also recorded. If an answer is still pending, resume the
+existing operation to retrieve it without sending the request again. See
+[operation recovery](docs/usage.md#operation-recovery).
+
 ## Reference
 
 - [CLI, conversations, files, and operation recovery](docs/usage.md)
