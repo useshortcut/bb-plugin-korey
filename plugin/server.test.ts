@@ -95,11 +95,19 @@ function userMessage(
   };
 }
 
-function completeResponse(text?: string, threadId?: string) {
-  return jsonResponse({
-    status: "complete",
-    messages: [assistantMessage(text, threadId)],
-  });
+// A completed turn includes a readiness check and a fresh response read.
+function completeResponse(text?: string, threadId?: string): Response[] {
+  return completedTurn(
+    jsonResponse({
+      status: "complete",
+      messages: [assistantMessage(text, threadId)],
+    }),
+    threadId,
+  );
+}
+
+function completedTurn(response: Response, threadId?: string): Response[] {
+  return [response, jsonResponse(koreyThread(threadId)), response.clone()];
 }
 
 function messagePage(data: unknown[] = []) {
@@ -112,14 +120,22 @@ function messagePage(data: unknown[] = []) {
   });
 }
 
-type StubbedFetchResult = Error | Response | (() => Response);
+type StubbedFetchResult =
+  | Error
+  | Response
+  | Response[]
+  | (() => Response | Response[]);
 
 function stubFetch(responses: StubbedFetchResult[]) {
   const calls: Array<{ init: RequestInit | undefined; url: string }> = [];
   const fetchImpl: typeof globalThis.fetch = async (input, init) => {
     calls.push({ url: String(input), init });
     const next = responses.shift();
-    const response = typeof next === "function" ? next() : next;
+    let response = typeof next === "function" ? next() : next;
+    if (Array.isArray(response)) {
+      responses.unshift(...response.slice(1));
+      response = response[0];
+    }
     if (response === undefined) {
       throw new Error(`Unexpected fetch ${String(input)}`);
     }
@@ -346,7 +362,7 @@ describe("Korey plugin conversations", () => {
       );
       expect(value.response).not.toContain("\uFFFD");
       expect(Buffer.byteLength(value.response)).toBeLessThan(66_000);
-      expect(calls).toHaveLength(3);
+      expect(calls).toHaveLength(5);
     },
   );
 
@@ -606,6 +622,8 @@ describe("Korey plugin conversations", () => {
     expect(calls.map((call) => call.url)).toEqual([
       "https://api.korey.ai/api/v1/threads/korey-thread-1",
       "https://api.korey.ai/api/v1/threads/korey-thread-1/messages",
+      "https://api.korey.ai/api/v1/threads/korey-thread-1/messages/user-message-2/response",
+      "https://api.korey.ai/api/v1/threads/korey-thread-1",
       "https://api.korey.ai/api/v1/threads/korey-thread-1/messages/user-message-2/response",
     ]);
   });
@@ -1221,7 +1239,10 @@ describe("Korey Shortcut requests and recovery", () => {
             messagePage([userMessage(original.dispatchedText!, "sent")]),
           );
         }
-        responses.push(completeResponse("Created SC-123"));
+        responses.push(
+          completeResponse("Created SC-123"),
+          completeResponse("Created SC-123"),
+        );
         const tool =
           action === "resume"
             ? "korey_resume_operation"
@@ -1743,20 +1764,22 @@ describe("Korey Shortcut requests and recovery", () => {
         jsonResponse(koreyThread()),
         jsonResponse({ message_id: "write-message-1" }, 201),
         additive
-          ? jsonResponse({
-              status: "complete",
-              extra: true,
-              messages: [
-                {
-                  ...assistantMessage("Created SC-123"),
-                  extra: true,
-                  contents: [
-                    { type: "text", text: "Created SC-123", extra: true },
-                    { type: "connector_result" },
-                  ],
-                },
-              ],
-            })
+          ? completedTurn(
+              jsonResponse({
+                status: "complete",
+                extra: true,
+                messages: [
+                  {
+                    ...assistantMessage("Created SC-123"),
+                    extra: true,
+                    contents: [
+                      { type: "text", text: "Created SC-123", extra: true },
+                      { type: "connector_result" },
+                    ],
+                  },
+                ],
+              }),
+            )
           : completeResponse("Created SC-123"),
       ]);
       const host = await loadPlugin();
@@ -1789,7 +1812,7 @@ describe("Korey Shortcut requests and recovery", () => {
         "The user requested this Shortcut change from bb.",
       );
       expect(sentBody.text).not.toContain("confirmation UI");
-      expect(calls).toHaveLength(5);
+      expect(calls).toHaveLength(7);
     },
   );
 

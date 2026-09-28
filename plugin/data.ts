@@ -419,11 +419,11 @@ interface OperationPatch {
   koreyThreadId?: string;
   koreyMessageId?: string;
   attachmentIds?: readonly string[];
-  responseText?: string;
+  responseText?: string | null;
   responseTruncated?: boolean;
   error?: string | null;
   approvedAt?: number;
-  completedAt?: number;
+  completedAt?: number | null;
 }
 
 export function transitionOperation(

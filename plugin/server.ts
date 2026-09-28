@@ -1044,7 +1044,8 @@ export default async function plugin(bb: BbPluginApi) {
     signal?: AbortSignal,
   ): Promise<OperationRecord> {
     if (
-      operation.status !== "awaiting-response" ||
+      (operation.status !== "awaiting-response" &&
+        operation.status !== "korey-complete") ||
       operation.koreyThreadId === null ||
       operation.koreyMessageId === null
     ) {
@@ -1052,10 +1053,25 @@ export default async function plugin(bb: BbPluginApi) {
         `Korey operation ${operation.id} cannot resume response polling from ${operation.status}.`,
       );
     }
+    const { koreyThreadId, koreyMessageId } = operation;
+    if (operation.status === "korey-complete") {
+      // Older versions could cache an intermediate answer as complete.
+      // An explicit resume refreshes it using the recorded message, never POST.
+      operation = transitionOperation(db, {
+        id: operation.id,
+        from: "korey-complete",
+        to: "awaiting-response",
+        patch: {
+          completedAt: null,
+          responseText: null,
+          responseTruncated: false,
+        },
+      });
+    }
     try {
       const messages = await api.waitForResponse(
-        operation.koreyThreadId,
-        operation.koreyMessageId,
+        koreyThreadId,
+        koreyMessageId,
         signal,
       );
       const response = boundedText(formatKoreyMessages(messages));
@@ -1419,7 +1435,6 @@ export default async function plugin(bb: BbPluginApi) {
     signal?: AbortSignal,
   ): Promise<OperationRecord> {
     return withOperationLock(bbThreadId, operationId, async (operation) => {
-      if (operation.status === "korey-complete") return operation;
       return finishOperationPolling(await client(), operation, signal);
     });
   }
@@ -1431,10 +1446,10 @@ export default async function plugin(bb: BbPluginApi) {
   ): Promise<{ reconciled: boolean; operation: OperationRecord }> {
     return withOperationLock(bbThreadId, operationId, async (current) => {
       let operation = current;
-      if (operation.status === "korey-complete") {
-        return { reconciled: true, operation };
-      }
-      if (operation.status === "awaiting-response") {
+      if (
+        operation.status === "awaiting-response" ||
+        operation.status === "korey-complete"
+      ) {
         operation = await finishOperationPolling(
           await client(),
           operation,

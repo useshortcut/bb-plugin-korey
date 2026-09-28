@@ -109,6 +109,14 @@ read-only poll:
 bb korey operation resume <operation-id>
 ```
 
+Resume also refreshes an already completed operation using its saved message ID.
+This retrieves final answers that older versions may have replaced with an
+intermediate response. It never sends the request again.
+
+Polling treats `404: No response yet` as pending, waits for the conversation to
+be ready, and fetches a fresh answer before recording completion. Missing
+messages, inaccessible threads, and interrupted processing remain errors.
+
 If message dispatch had an unknown outcome, reconcile the existing operation
 against the linked Korey history:
 

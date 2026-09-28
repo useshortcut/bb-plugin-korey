@@ -86,6 +86,15 @@ export class KoreyApiError extends Error {
   }
 }
 
+export class KoreyResponsePendingError extends KoreyApiError {
+  constructor() {
+    super(
+      "Korey response is still pending; resume polling for the existing message",
+    );
+    this.name = "KoreyResponsePendingError";
+  }
+}
+
 interface KoreyClientOptions {
   token: string;
   baseUrl?: string;
@@ -479,13 +488,65 @@ export class KoreyClient {
       "message-id": messageId,
     });
     const deadline = Date.now() + this.responseTimeoutMs;
+    const threadPath = endpointPath(getThreadEndpoint.path.value, {
+      "thread-id": threadId,
+    });
+    let readyObserved = false;
+    while (true) {
+      const response = await this.fetchPollingPath(path, deadline, signal);
+      let messages: KoreyMessage[] | null = null;
+      if (response.status === 200) {
+        messages = parseResponse(
+          completeResponseSchema,
+          response.text,
+          path,
+          response.status,
+        ).messages;
+        // Fetch after observing ready: an earlier 200 can contain only an
+        // intermediate answer, even when the subsequent state read is ready.
+        if (readyObserved) return messages;
+      } else if (response.status === 202) {
+        parseResponse(processingResponseSchema, response.text, path, 202);
+      } else if (!isPendingResponse(response.status, response.text)) {
+        throw pollingError(response.status, response.text);
+      }
+
+      const threadResponse = await this.fetchPollingPath(
+        threadPath,
+        deadline,
+        signal,
+      );
+      if (threadResponse.status !== 200) {
+        throw pollingError(threadResponse.status, threadResponse.text);
+      }
+      const thread = parseResponse(
+        koreyThreadSchema,
+        threadResponse.text,
+        threadPath,
+        200,
+      );
+      if (thread.state === "error" || thread.state === "interrupted") {
+        throw new KoreyApiError(
+          `Korey processing ${thread.state} for message ${messageId}; inspect the conversation before continuing`,
+        );
+      }
+      readyObserved = messages !== null && thread.state === "ready";
+      if (!readyObserved) {
+        await this.waitBeforeRetry(deadline, 1, signal, this.pollIntervalMs);
+      }
+    }
+  }
+
+  private async fetchPollingPath(
+    path: string,
+    deadline: number,
+    signal?: AbortSignal,
+  ): Promise<Awaited<ReturnType<KoreyClient["fetchPath"]>>> {
     let transientFailures = 0;
     while (true) {
       const remainingBeforeRequest = deadline - Date.now();
       if (remainingBeforeRequest <= 0) {
-        throw new KoreyApiError(
-          "Korey did not complete the response before the five-minute timeout",
-        );
+        throw new KoreyResponsePendingError();
       }
       let response: Awaited<ReturnType<KoreyClient["fetchPath"]>>;
       try {
@@ -500,14 +561,6 @@ export class KoreyClient {
         await this.waitBeforeRetry(deadline, transientFailures, signal);
         continue;
       }
-      if (response.status === 200) {
-        return parseResponse(
-          completeResponseSchema,
-          response.text,
-          path,
-          response.status,
-        ).messages;
-      }
       if (response.status === 429 || response.status >= 500) {
         transientFailures += 1;
         await this.waitBeforeRetry(
@@ -518,21 +571,7 @@ export class KoreyClient {
         );
         continue;
       }
-      if (response.status !== 202) {
-        const detail = errorDetail(response.text).trim().slice(0, 500);
-        throw new KoreyApiError(
-          `Korey response polling returned ${response.status}${detail.length > 0 ? `: ${detail}` : ""}`,
-          response.status,
-        );
-      }
-      parseResponse(
-        processingResponseSchema,
-        response.text,
-        path,
-        response.status,
-      );
-      transientFailures = 0;
-      await this.waitBeforeRetry(deadline, 1, signal, this.pollIntervalMs);
+      return response;
     }
   }
 
@@ -544,9 +583,7 @@ export class KoreyClient {
   ): Promise<void> {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      throw new KoreyApiError(
-        "Korey did not complete the response before the five-minute timeout",
-      );
+      throw new KoreyResponsePendingError();
     }
     const backoff = Math.min(
       10_000,
@@ -554,12 +591,31 @@ export class KoreyClient {
     );
     const delay = requestedDelayMs ?? backoff;
     if (delay >= remaining) {
-      throw new KoreyApiError(
-        "Korey did not complete the response before the five-minute timeout",
-      );
+      throw new KoreyResponsePendingError();
     }
     await sleep(delay, undefined, { signal });
   }
+}
+
+function isPendingResponse(status: number, text: string): boolean {
+  if (status !== 404) return false;
+  try {
+    const value: unknown = JSON.parse(text);
+    return (
+      stringField(value, "error") === "not-found" &&
+      stringField(value, "message") === "No response yet"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function pollingError(status: number, text: string): KoreyApiError {
+  const detail = errorDetail(text).trim().slice(0, 500);
+  return new KoreyApiError(
+    `Korey response polling returned ${status}${detail.length > 0 ? `: ${detail}` : ""}`,
+    status,
+  );
 }
 
 function retryAfterMilliseconds(value: string | null): number | undefined {
