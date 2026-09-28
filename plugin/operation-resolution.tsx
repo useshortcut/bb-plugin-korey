@@ -41,9 +41,9 @@ export function OperationResolution({
   return (
     <div className="space-y-4 text-sm">
       <p>
-        Confirm only after inspecting Korey and Shortcut. This closes the local
-        operation and allows later Shortcut requests to proceed. It does not
-        cancel work in Korey or verify a Shortcut result.
+        Confirm only after inspecting Korey and the affected service. This
+        closes the local operation and allows later changes to proceed. It does
+        not cancel work in Korey or verify a change in the connected service.
       </p>
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2">
         <dt>Operation</dt>

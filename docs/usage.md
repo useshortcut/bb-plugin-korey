@@ -16,6 +16,23 @@ bb korey ask "Summarize the Sentry errors introduced in our latest release"
 bb korey ask "Review these files" --file spec.md --file screenshot.png
 ```
 
+To request a change through any of Korey's connected services, use `--change`:
+
+```sh
+bb korey ask --change "Enable LaunchDarkly flag checkout-v2 in the shop project's staging environment"
+bb korey ask --change "Resolve Sentry issue SHOP-42"
+```
+
+For agents, `korey_ask` accepts `mode: "change"` for requested actions and
+`mode: "consult"` for research, questions, and drafts. Omitted mode defaults to
+`consult`. Prefer the dedicated `korey_shortcut_change` tool for Story creation
+and updates. An explicit change request authorizes its dispatch without an
+extra confirmation. The target and requested change must be clear.
+
+Change mode returns an operation ID, state, and response using the recovery
+flow below. Both change routes share the same journal and unresolved-operation
+checks. Consultation remains available while an earlier change is unresolved.
+
 If a message begins with `-`, put options before `--`, then the message:
 
 ```sh
@@ -66,7 +83,7 @@ Native tools expose the same capabilities:
 
 ## Operation Recovery
 
-Every Shortcut request has a durable operation ID and SQLite journal. The
+Every change request has a durable operation ID and SQLite journal. The
 plugin records the immutable request, destination, attachment hashes,
 uploaded attachment IDs, Korey thread ID, and Korey message ID as they become
 available.
@@ -100,10 +117,11 @@ bb korey operation reconcile <operation-id>
 ```
 
 Reconciliation never resends the message. An absent history match does not
-prove that Shortcut made no change, so inspect Korey and Shortcut before requesting
-another change.
+prove that the connected service made no change, so inspect Korey and the
+affected service before requesting another change.
 
-After inspecting Korey and Shortcut, close an unresolved operation with a note:
+After inspecting Korey and the affected service, close an unresolved operation
+with a note:
 
 ```sh
 bb korey operation resolve <operation-id> "Verified SC-123 contains the requested change"
@@ -124,19 +142,20 @@ Important operation states:
 | -------------------- | ----------------------------------------------------------------------------------------- |
 | `requested`          | The user’s request is recorded and preparation is about to start.                         |
 | `awaiting-response`  | Korey recorded the message; response polling can resume safely.                           |
-| `korey-complete`     | Korey finished the turn; the Shortcut result still requires review.                       |
+| `korey-complete`     | Korey finished the turn; the connected service's result still requires review.            |
 | `manually-resolved`  | You confirmed local closeout after inspection; remote work is not verified or cancelled.  |
-| `definite-failure`   | No Shortcut-intended message was dispatched.                                              |
+| `definite-failure`   | No change-request message was accepted.                                                   |
 | `reconcile-required` | Message dispatch may have succeeded; never resend automatically.                          |
 | `cancelled`          | A pending approval from an older plugin version was cancelled on reload without dispatch. |
 
 ## Safety Model
 
-`korey_shortcut_change` acts on the user’s explicit create or update request.
-The plugin records the request, destination, and attachment hashes before
-sending it. It checks conversation readiness, privacy, and revision, serializes
-requests within each bb thread, and claims first-use mappings transactionally.
-If the destination changes during preparation, no Shortcut message is sent.
+`korey_ask` in change mode and `korey_shortcut_change` act on the user's explicit
+request. The plugin records the request, destination, and attachment hashes
+before sending it. It checks conversation readiness, privacy, and revision,
+serializes requests within each bb thread, and claims first-use mappings
+transactionally. If the destination changes during preparation, no change
+request is sent.
 
 Unresolved operations from either the current bb thread or the destination
 Korey conversation block a new write, including after a conversation is relinked
@@ -144,15 +163,17 @@ from another bb thread. The plugin checks again before message dispatch. Resume,
 reconcile, or manually resolve the existing operation instead of submitting a
 replacement whose effect may be duplicated.
 
-Korey's public API has no idempotency key or structured Shortcut mutation
-result. The plugin therefore cannot promise exactly-once Shortcut writes. It
+Korey's public API has no idempotency key or structured connector mutation
+result. The plugin therefore cannot promise exactly-once changes. It
 never automatically repeats a message whose dispatch may have started, and a
-Korey `complete` response is not proof that Shortcut committed exactly one
-change. Always review the resulting Story.
+Korey `complete` response is not proof that a connected service committed exactly
+one change. Review the affected resources.
 
-`korey_ask` prefixes consultation requests with an instruction not to modify
-connected systems. This is prompt-mediated, not a connector capability
-sandbox. Use a Korey workspace and connector permissions appropriate for the
+`korey_ask` in consult mode prefixes requests with an instruction not to modify
+connected systems. Change mode asks Korey to carry out only the requested action;
+the dedicated Shortcut tool asks for the specified Story create or update.
+These instructions are prompt-mediated, not a connector capability sandbox.
+Use a Korey workspace and connector permissions appropriate for the
 data and actions available to Korey. Consultation messages include a unique
 reference so an ambiguous message response can be reconciled against Korey
 history; if no exact match is visible, inspect the conversation rather than

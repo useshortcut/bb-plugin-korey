@@ -1,6 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import type { ShortcutRequest } from "./contracts.js";
+import type { OperationRequest } from "./contracts.js";
 
 type Db = ReturnType<BbPluginApi["storage"]["database"]>;
 
@@ -357,13 +357,13 @@ function getMappingRequired(db: Db, bbThreadId: string): MappingRecord {
 
 export function createOperation(
   db: Db,
-  request: ShortcutRequest,
+  request: OperationRequest,
 ): OperationRecord {
   const now = Date.now();
   db.prepare(
     `INSERT INTO korey_operations (
        id, bb_thread_id, status, request_json, request_hash, created_at, updated_at, request_version
-     ) VALUES (?, ?, 'requested', ?, ?, ?, ?, 2)`,
+     ) VALUES (?, ?, 'requested', ?, ?, ?, ?, ?)`,
   ).run(
     request.operationId,
     request.bbThreadId,
@@ -371,6 +371,7 @@ export function createOperation(
     request.requestHash,
     now,
     now,
+    request.action === "change" ? 3 : 2,
   );
   return getOperationRequired(db, request.operationId);
 }
@@ -536,7 +537,7 @@ export function recoverInterruptedOperations(db: Db): void {
   db.prepare(
     `UPDATE korey_operations
         SET status = 'definite-failure',
-            error = 'The plugin stopped before a Shortcut message was dispatched; inspect the operation before trying again',
+            error = 'The plugin stopped before a change request was dispatched; inspect the operation before trying again',
             updated_at = ?
       WHERE status IN (
         'requested', 'approved', 'preparing', 'thread-ready',

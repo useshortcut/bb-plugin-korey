@@ -71,6 +71,30 @@ function payload(operationId: string) {
   };
 }
 
+it("describes manual closeout for a change in any connected service", () => {
+  const properties = props(
+    "flag-resolution",
+    "korey-flag",
+    async () => undefined,
+  );
+  properties.interaction.payload = {
+    operationId: "korey-flag",
+    resolutionHash: "c".repeat(64),
+    status: "reconcile-required",
+    instruction: "Enable checkout-v2 in staging.",
+    koreyThreadId: "thread-one",
+    note: "Verified the flag is enabled in LaunchDarkly.",
+  };
+  const slot = renderSlot(app.pendingInteractions[0]!, properties);
+  expect(
+    slot.getByText("Verified the flag is enabled in LaunchDarkly."),
+  ).toBeTruthy();
+  expect(slot.container.textContent).toContain(
+    "inspecting Korey and the affected service",
+  );
+  expect(slot.container.textContent).not.toContain("Shortcut");
+});
+
 function props(
   interactionId: string,
   operationId: string,
