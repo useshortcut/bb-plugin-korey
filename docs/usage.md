@@ -29,9 +29,10 @@ For agents, `korey_ask` accepts `mode: "change"` for requested actions and
 and updates. An explicit change request authorizes its dispatch without an
 extra confirmation. The target and requested change must be clear.
 
-Change mode returns an operation ID, state, and response using the recovery
-flow below. Both change routes share the same journal and unresolved-operation
-checks. Consultation remains available while an earlier change is unresolved.
+Consultation and change requests return an operation ID, state, and response
+using the recovery flow below. Both change routes share the same journal and
+unresolved-write checks. Consultation remains available while an earlier change
+is unresolved; a pending consultation does not block a new requested change.
 
 If a message begins with `-`, put options before `--`, then the message:
 
@@ -83,7 +84,7 @@ Native tools expose the same capabilities:
 
 ## Operation Recovery
 
-Every change request has a durable operation ID and SQLite journal. The
+Every consultation and change request has a durable operation ID and SQLite journal. The
 plugin records the immutable request, destination, attachment hashes,
 uploaded attachment IDs, Korey thread ID, and Korey message ID as they become
 available.
@@ -99,15 +100,35 @@ The list includes operations started in this bb thread and operations in its
 currently linked Korey conversation. After relinking a conversation, you can
 inspect, resume, reconcile, or manually resolve its operations from the new
 thread. The originating bb thread also retains access. Recover unresolved
-operations inherited from another thread before unlinking or changing the
+write operations inherited from another thread before unlinking or changing the
 conversation link.
 
-If Korey accepted the message but response polling failed, resume only the
-read-only poll:
+If Korey accepted the message but the polling budget expires or the caller
+cancels the wait, the result has `status: "awaiting-response"`, the saved
+`koreyMessageId`, and a `nextStep` explaining how to resume. A pending response
+is not a dispatch failure. The plugin does not deliver answers in the background;
+the agent or user must resume the existing operation to retrieve the answer.
+The journal survives plugin reloads even if cancellation prevents the caller
+from receiving the result. Use `operation list` to find it.
+
+Resume this read-only poll for pending answers or after a polling error:
 
 ```sh
 bb korey operation resume <operation-id>
 ```
+
+Resume also refreshes an already completed operation using its saved message ID.
+This retrieves final answers that older versions may have replaced with an
+intermediate response. It never sends the request again.
+
+Polling treats `404: No response yet` as pending, waits for the conversation to
+be ready, and fetches a fresh answer before recording completion. Missing
+messages, inaccessible threads, and interrupted processing remain errors.
+
+Consultations sent by older plugin versions have no journal entry. Inspect
+their original Korey conversation with `korey_get_thread` or
+`bb korey show <korey-thread-id>` and follow pagination to retrieve the answer.
+Do not send a replacement consultation just to retrieve its response.
 
 If message dispatch had an unknown outcome, reconcile the existing operation
 against the linked Korey history:
@@ -144,7 +165,7 @@ Important operation states:
 | `awaiting-response`  | Korey recorded the message; response polling can resume safely.                           |
 | `korey-complete`     | Korey finished the turn; the connected service's result still requires review.            |
 | `manually-resolved`  | You confirmed local closeout after inspection; remote work is not verified or cancelled.  |
-| `definite-failure`   | No change-request message was accepted.                                                   |
+| `definite-failure`   | No request message was accepted.                                                          |
 | `reconcile-required` | Message dispatch may have succeeded; never resend automatically.                          |
 | `cancelled`          | A pending approval from an older plugin version was cancelled on reload without dispatch. |
 
@@ -157,7 +178,7 @@ serializes requests within each bb thread, and claims first-use mappings
 transactionally. If the destination changes during preparation, no change
 request is sent.
 
-Unresolved operations from either the current bb thread or the destination
+Unresolved writes from either the current bb thread or the destination
 Korey conversation block a new write, including after a conversation is relinked
 from another bb thread. The plugin checks again before message dispatch. Resume,
 reconcile, or manually resolve the existing operation instead of submitting a

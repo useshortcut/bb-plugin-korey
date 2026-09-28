@@ -57,6 +57,9 @@ describe("KoreyClient", () => {
       }),
       jsonResponse({ message_id: "sent", extra: true }, 201),
       jsonResponse({ status: "processing", extra: true }, 202),
+      jsonResponse({ ...thread, state: "active", extra: true }),
+      jsonResponse({ status: "complete", messages: [message], extra: true }),
+      jsonResponse({ ...thread, extra: true }),
       jsonResponse({ status: "complete", messages: [message], extra: true }),
       jsonResponse({
         data: [message],
@@ -157,6 +160,12 @@ describe("KoreyClient", () => {
     const responses = [
       jsonResponse({ message_id: "message-user" }, 201),
       jsonResponse({ status: "processing" }, 202),
+      jsonResponse({ ...koreyThreadResponse(), state: "active" }),
+      jsonResponse({
+        status: "complete",
+        messages: [assistantMessage("thread/one", "Draft ready")],
+      }),
+      jsonResponse(koreyThreadResponse()),
       jsonResponse({
         status: "complete",
         messages: [assistantMessage("thread/one", "Draft ready")],
@@ -186,6 +195,9 @@ describe("KoreyClient", () => {
     expect(calls.map((call) => call.url)).toEqual([
       "https://api.korey.test/api/v1/threads/thread%2Fone/messages",
       "https://api.korey.test/api/v1/threads/thread%2Fone/messages/message-user/response",
+      "https://api.korey.test/api/v1/threads/thread%2Fone",
+      "https://api.korey.test/api/v1/threads/thread%2Fone/messages/message-user/response",
+      "https://api.korey.test/api/v1/threads/thread%2Fone",
       "https://api.korey.test/api/v1/threads/thread%2Fone/messages/message-user/response",
     ]);
     expect(calls[0]?.init?.headers).toMatchObject({
@@ -334,6 +346,11 @@ describe("KoreyClient", () => {
         status: "complete",
         messages: [assistantMessage("thread-one", "Recovered")],
       }),
+      jsonResponse(koreyThreadResponse()),
+      jsonResponse({
+        status: "complete",
+        messages: [assistantMessage("thread-one", "Recovered")],
+      }),
     ];
     const calls: string[] = [];
     const client = new KoreyClient({
@@ -353,7 +370,7 @@ describe("KoreyClient", () => {
     expect(messages[0]?.contents).toEqual([
       { type: "text", text: "Recovered" },
     ]);
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(4);
   });
 
   it("stops when Retry-After exceeds the remaining response deadline", async () => {
@@ -373,7 +390,7 @@ describe("KoreyClient", () => {
     await expect(
       client.waitForResponse("thread-one", "message-one"),
     ).rejects.toThrow(
-      "Korey did not complete the response before the five-minute timeout",
+      "Korey response is still pending; resume polling for the existing message",
     );
     expect(requestCount).toBe(1);
   });

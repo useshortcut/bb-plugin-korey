@@ -53,9 +53,17 @@ export const connectorChangeRequestSchema = shortcutRequestSchema.extend({
   storyId: z.null(),
 });
 
+export const consultationRequestSchema = connectorChangeRequestSchema.extend({
+  operationId: z.string().regex(/^korey-consult-[a-f0-9-]+$/u),
+  action: z.literal("consult"),
+  // Consultations do not require an identity lookup or its additional scope.
+  koreyOrganization: z.null(),
+});
+
 export const operationRequestSchema = z.union([
   shortcutRequestSchema,
   connectorChangeRequestSchema,
+  consultationRequestSchema,
 ]);
 
 export type OperationRequest = z.infer<typeof operationRequestSchema>;

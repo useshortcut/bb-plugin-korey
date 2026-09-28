@@ -371,7 +371,7 @@ export function createOperation(
     request.requestHash,
     now,
     now,
-    request.action === "change" ? 3 : 2,
+    request.action === "consult" ? 4 : request.action === "change" ? 3 : 2,
   );
   return getOperationRequired(db, request.operationId);
 }
@@ -402,15 +402,19 @@ export function listUnresolvedOperations(
   bbThreadId: string,
   koreyThreadId: string | null,
 ): OperationRecord[] {
-  return db
-    .prepare(
-      `SELECT * FROM korey_operations
+  return (
+    db
+      .prepare(
+        `SELECT * FROM korey_operations
         WHERE (bb_thread_id = ? OR korey_thread_id = ?)
           AND status IN ('awaiting-response', 'reconcile-required')
         ORDER BY created_at ASC, id ASC`,
-    )
-    .all(bbThreadId, koreyThreadId)
-    .map(operationRecord);
+      )
+      .all(bbThreadId, koreyThreadId)
+      .map(operationRecord)
+      // A pending read must not become an unresolved external-write barrier.
+      .filter((operation) => operation.request.action !== "consult")
+  );
 }
 
 interface OperationPatch {
@@ -419,11 +423,11 @@ interface OperationPatch {
   koreyThreadId?: string;
   koreyMessageId?: string;
   attachmentIds?: readonly string[];
-  responseText?: string;
+  responseText?: string | null;
   responseTruncated?: boolean;
   error?: string | null;
   approvedAt?: number;
-  completedAt?: number;
+  completedAt?: number | null;
 }
 
 export function transitionOperation(
@@ -507,7 +511,7 @@ export function transitionOperation(
 export function updateOperationError(
   db: Db,
   id: string,
-  error: string,
+  error: string | null,
 ): OperationRecord {
   const changed = db
     .prepare(
@@ -537,7 +541,7 @@ export function recoverInterruptedOperations(db: Db): void {
   db.prepare(
     `UPDATE korey_operations
         SET status = 'definite-failure',
-            error = 'The plugin stopped before a change request was dispatched; inspect the operation before trying again',
+            error = 'The plugin stopped before a request was dispatched; inspect the operation before trying again',
             updated_at = ?
       WHERE status IN (
         'requested', 'approved', 'preparing', 'thread-ready',

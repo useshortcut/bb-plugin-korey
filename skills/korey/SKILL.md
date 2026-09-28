@@ -34,9 +34,10 @@ a second confirmation. Ask for clarification only if the intended change or
 destination is unclear. Korey handles the Story through its connector and
 workspace conventions.
 
-Both change routes share operation tracking. The plugin stops a new write if
-an earlier operation from either route is unresolved. Follow the recovery steps
-below before continuing. Consultation remains available to inspect the outcome.
+Consultations and both change routes share operation tracking. The plugin stops
+a new write if an earlier change operation from either route is unresolved.
+Follow the recovery steps below before continuing. Consultation remains available
+to inspect the outcome, and pending consultations do not block new requested changes.
 
 ## Continue a conversation
 
@@ -48,7 +49,7 @@ result reports `has_more`.
 
 After relinking, recover the conversation's unresolved operations from the
 current thread or their originating thread. The plugin blocks another link
-change until inherited unresolved operations are recovered.
+change until inherited unresolved writes are recovered.
 
 ## Include workspace files
 
@@ -59,18 +60,29 @@ traversal, and files outside the workspace are rejected before Korey activity.
 
 ## Recover an interrupted request
 
-If consultation dispatch has an unknown outcome and no exact history match is
-visible, inspect the linked conversation and do not resend automatically.
+Never resend a consultation or change to retrieve its answer or retry an
+unknown dispatch outcome. Use `korey_get_operation` to inspect the operation ID.
+If cancellation hid the result, use `korey_list_operations` to find the request.
 
-Never send another change through `korey_ask` or `korey_shortcut_change` to retry
-an operation with an unknown outcome. Use `korey_get_operation` first.
-Use `korey_resume_operation` only
-when its recorded state is `awaiting-response`; this resumes safe polling.
-Use `korey_reconcile_operation` for `reconcile-required`; it reads Korey
-history and never resends the request. If reconciliation finds no message,
-inspect Korey and the affected service and ask the user how to proceed. A
-`definite-failure` means no change-request message was accepted; resolve the reported
-problem before retrying the user’s request.
+A result with `status: "awaiting-response"` means Korey accepted the message
+and the answer is still pending. Follow its `nextStep`: use
+`korey_resume_operation` with the same operation ID to continue read-only
+polling. The plugin does not deliver the answer in the background. If another
+poll remains pending, report that state without claiming the request failed.
+The journal survives plugin reloads. You can also resume a `korey-complete`
+operation to refresh an intermediate answer cached by an older version.
+
+Use `korey_reconcile_operation` for `reconcile-required`; it searches Korey
+history for the recorded request and never resends it.
+If reconciliation finds no message, inspect Korey and the affected service and
+ask the user how to proceed.
+
+A `definite-failure` means no request message was accepted; resolve the
+reported problem before retrying the user’s request.
+
+Older consultations have no operation record. Inspect their original Korey
+conversation with `korey_get_thread` and follow pagination to retrieve the
+answer; do not send a replacement request.
 
 For equivalent CLI commands, use `bb korey --help`.
 

@@ -115,14 +115,29 @@ or `422`; those responses remain uncertain until inspected. A status code alone
 does not establish that a write had no effect. Response polling uses bounded
 backoff for transient network errors, `429`, and `5xx`, and honors `Retry-After`.
 
+The response endpoint can return `404` with `error: "not-found"` and
+`message: "No response yet"` after accepting a message but before the queue
+worker starts. Only that exact error is pending; invalid message IDs and
+inaccessible threads still fail. The endpoint can also return `200 complete`
+for an intermediate answer while the conversation is active. Polling checks
+the conversation state, waits for `ready`, then fetches a fresh response.
+Both reads share a bounded polling budget. These API behaviors are not fully
+described by the pinned OpenAPI document.
+
 Journals retain versioned request snapshots and the exact dispatched text.
 Reading history does not validate it against the current request schema;
 reconciliation uses recorded text, with a version 1 fallback for older journals.
 Shortcut operations use request version 2; general connector changes through
-`korey_ask` use version 3 with `action: "change"`. Both begin in `requested`
-without an approval timestamp and share dispatch, unresolved-operation checks,
-and recovery. General requests retain the same attachment hashes and exact
-dispatched text as Shortcut requests. Version 1 journals retain their original prompts
+`korey_ask` use version 3 with `action: "change"`. Consultations use version 4
+with `action: "consult"` and preserve the existing consultation prompt and
+reference format. All begin in `requested` without an approval timestamp and
+record attachment hashes, exact dispatched text, uploaded attachment IDs, and
+the accepted message ID. Consultations share response recovery but are excluded
+from unresolved-write checks. A polling timeout or caller cancellation after
+acceptance leaves `awaiting-response` with no error; resume reads the saved
+message without uploading or sending again. Explicitly resuming or reconciling
+`korey-complete` also refreshes answers cached by older versions.
+Version 1 journals retain their original prompts
 and approval history. Pending approval rows from older plugin versions are
 cancelled on reload and are never dispatched automatically.
 Unresolved operations can be closed locally through the confirmed

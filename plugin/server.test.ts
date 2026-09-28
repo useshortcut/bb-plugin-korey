@@ -95,11 +95,19 @@ function userMessage(
   };
 }
 
-function completeResponse(text?: string, threadId?: string) {
-  return jsonResponse({
-    status: "complete",
-    messages: [assistantMessage(text, threadId)],
-  });
+// A completed turn includes a readiness check and a fresh response read.
+function completeResponse(text?: string, threadId?: string): Response[] {
+  return completedTurn(
+    jsonResponse({
+      status: "complete",
+      messages: [assistantMessage(text, threadId)],
+    }),
+    threadId,
+  );
+}
+
+function completedTurn(response: Response, threadId?: string): Response[] {
+  return [response, jsonResponse(koreyThread(threadId)), response.clone()];
 }
 
 function messagePage(data: unknown[] = []) {
@@ -112,14 +120,22 @@ function messagePage(data: unknown[] = []) {
   });
 }
 
-type StubbedFetchResult = Error | Response | (() => Response);
+type StubbedFetchResult =
+  | Error
+  | Response
+  | Response[]
+  | (() => Response | Response[]);
 
 function stubFetch(responses: StubbedFetchResult[]) {
   const calls: Array<{ init: RequestInit | undefined; url: string }> = [];
   const fetchImpl: typeof globalThis.fetch = async (input, init) => {
     calls.push({ url: String(input), init });
     const next = responses.shift();
-    const response = typeof next === "function" ? next() : next;
+    let response = typeof next === "function" ? next() : next;
+    if (Array.isArray(response)) {
+      responses.unshift(...response.slice(1));
+      response = response[0];
+    }
     if (response === undefined) {
       throw new Error(`Unexpected fetch ${String(input)}`);
     }
@@ -202,10 +218,302 @@ const hosts: FakePluginHost[] = [];
 
 afterEach(async () => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   await Promise.all(hosts.splice(0).map((host) => host.harness.dispose()));
 });
 
 describe("Korey plugin conversations", () => {
+  it("shows a pending consultation and its eventual answer in plain CLI output", async () => {
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const responses: StubbedFetchResult[] = [
+      jsonResponse(koreyThread()),
+      jsonResponse({ message_id: "accepted-consultation" }, 201),
+      () => {
+        now += 300_001;
+        return jsonResponse(
+          { error: "not-found", message: "No response yet" },
+          404,
+        );
+      },
+    ];
+    const calls = stubFetch(responses);
+    const host = await loadPlugin();
+    storeMapping(host);
+    const pending = await host.harness.runCli([
+      "ask",
+      "Research this question",
+      "--bb-thread",
+      "thread-test",
+    ]);
+    const operation = listOperations(
+      host.bb.storage.database(),
+      "thread-test",
+      1,
+    )[0]!;
+    expect(pending.exitCode).toBe(0);
+    expect(pending.stdout).toContain("awaiting-response");
+    expect(pending.stdout).toContain(
+      `bb korey operation resume ${operation.id}`,
+    );
+    expect(operation).toMatchObject({ error: null, completedAt: null });
+    responses.push(completeResponse("The eventual consultation answer"));
+    const resumed = await host.harness.runCli([
+      "operation",
+      "resume",
+      operation.id,
+      "--bb-thread",
+      "thread-test",
+    ]);
+    expect(resumed.exitCode).toBe(0);
+    expect(resumed.stdout).toContain("korey-complete");
+    expect(resumed.stdout).toContain("The eventual consultation answer");
+    expect(calls.filter(({ init }) => init?.method === "POST")).toHaveLength(1);
+  });
+
+  it("records cancellation after a consultation upload without dispatching a message", async () => {
+    const controller = new AbortController();
+    const calls = stubFetch([
+      jsonResponse(koreyThread()),
+      () => {
+        controller.abort();
+        return jsonResponse(
+          [{ id: "7c1d7259-9c10-4e68-98ef-227fe57aad91", filename: "spec.md" }],
+          201,
+        );
+      },
+    ]);
+    const host = await loadPlugin();
+    storeMapping(host);
+    const result = await host.harness.callAgentTool(
+      "korey_ask",
+      { prompt: "Research the attached specification", files: ["spec.md"] },
+      { signal: controller.signal },
+    );
+    const operations = listOperations(
+      host.bb.storage.database(),
+      "thread-test",
+      10,
+    );
+    expect(result).toMatchObject({ isError: true });
+    expect(operations).toHaveLength(1);
+    expect(operations[0]).toMatchObject({
+      status: "definite-failure",
+      requestVersion: 4,
+      koreyMessageId: null,
+      dispatchedText: null,
+    });
+    const resumed = await host.harness.callAgentTool("korey_resume_operation", {
+      operationId: operations[0]!.id,
+    });
+    expect(resumed).toMatchObject({ isError: true });
+    expect(calls.map(({ url }) => new URL(url).pathname)).toEqual([
+      "/api/v1/threads/korey-thread-1",
+      "/api/v1/threads/korey-thread-1/attachments",
+    ]);
+  });
+
+  it.each(["agent", "cli"])(
+    "returns a durable consultation after the %s polling budget expires and resumes after reload",
+    async (mode) => {
+      let now = Date.now();
+      vi.spyOn(Date, "now").mockImplementation(() => now);
+      const attachmentId = "7c1d7259-9c10-4e68-98ef-227fe57aad91";
+      const responses: StubbedFetchResult[] = [
+        jsonResponse(koreyThread()),
+        jsonResponse([{ id: attachmentId, filename: "spec.md" }], 201),
+        jsonResponse({ message_id: "accepted-consultation" }, 201),
+        () => {
+          now += 300_001;
+          return jsonResponse(
+            { error: "not-found", message: "No response yet" },
+            404,
+          );
+        },
+      ];
+      const calls = stubFetch(responses);
+      let host = await loadPlugin();
+      storeMapping(host);
+      const result =
+        mode === "agent"
+          ? await host.harness.callAgentTool("korey_ask", {
+              mode: "consult",
+              prompt: "Research the attached specification",
+              files: ["spec.md"],
+            })
+          : (
+              await host.harness.runCli([
+                "ask",
+                "Research the attached specification",
+                "--file",
+                "spec.md",
+                "--bb-thread",
+                "thread-test",
+                "--json",
+              ])
+            ).stdout;
+      expect(String(result)).toContain('"status": "awaiting-response"');
+      const pending = JSON.parse(String(result));
+      expect(pending).toMatchObject({
+        action: "consult",
+        requestVersion: 4,
+        koreyMessageId: "accepted-consultation",
+        response: null,
+        nextStep: expect.stringContaining("korey_resume_operation"),
+        appUrl: koreyThread().app_url,
+      });
+      const stored = getOperation(
+        host.bb.storage.database(),
+        pending.operationId,
+      )!;
+      expect(stored).toMatchObject({
+        status: "awaiting-response",
+        koreyMessageId: "accepted-consultation",
+        attachmentIds: [attachmentId],
+      });
+      expect(stored.dispatchedText).toBe(
+        JSON.parse(String(calls[2]?.init?.body)).text,
+      );
+      const previousHost = host;
+      host = await host.harness.lifecycle.reload(koreyPlugin);
+      hosts[hosts.indexOf(previousHost)] = host;
+      responses.push(completeResponse("The eventual consultation answer"));
+      const resumed = await host.harness.callAgentTool(
+        "korey_resume_operation",
+        { operationId: stored.id },
+      );
+      expect(JSON.parse(String(resumed))).toMatchObject({
+        status: "korey-complete",
+        response: "The eventual consultation answer",
+      });
+      expect(calls.filter(({ init }) => init?.method === "POST")).toHaveLength(
+        2,
+      );
+      expect(
+        calls.filter(({ url }) => url.endsWith("/attachments")),
+      ).toHaveLength(1);
+    },
+  );
+
+  it("reconciles a durable consultation after an ambiguous dispatch and reload without resending", async () => {
+    const responses: StubbedFetchResult[] = [
+      jsonResponse(koreyThread()),
+      new Error("connection reset"),
+      messagePage(),
+    ];
+    const calls = stubFetch(responses);
+    let host = await loadPlugin();
+    storeMapping(host);
+    await host.harness.callAgentTool("korey_ask", {
+      mode: "consult",
+      prompt: "Research this question",
+    });
+    const operations = listOperations(
+      host.bb.storage.database(),
+      "thread-test",
+      100,
+    );
+    expect(operations).toHaveLength(1);
+    const operation = operations[0]!;
+    expect(operation.status).toBe("reconcile-required");
+    expect(operation.dispatchedText).toBe(
+      JSON.parse(String(calls[1]?.init?.body)).text,
+    );
+    const previousHost = host;
+    host = await host.harness.lifecycle.reload(koreyPlugin);
+    hosts[hosts.indexOf(previousHost)] = host;
+    responses.push(
+      messagePage([
+        userMessage(operation.dispatchedText!, "accepted-consultation"),
+      ]),
+      completeResponse("Recovered consultation"),
+    );
+    const result = await host.harness.callAgentTool(
+      "korey_reconcile_operation",
+      { operationId: operation.id },
+    );
+    expect(JSON.parse(String(result))).toMatchObject({
+      reconciled: true,
+      status: "korey-complete",
+      response: "Recovered consultation",
+    });
+    expect(calls.filter(({ init }) => init?.method === "POST")).toHaveLength(1);
+  });
+
+  it("keeps a durable consultation resumable when cancelled after acceptance", async () => {
+    const controller = new AbortController();
+    const responses: StubbedFetchResult[] = [
+      jsonResponse(koreyThread()),
+      () => {
+        controller.abort();
+        return jsonResponse({ message_id: "accepted-consultation" }, 201);
+      },
+    ];
+    const calls = stubFetch(responses);
+    const host = await loadPlugin();
+    storeMapping(host);
+    const result = await host.harness.callAgentTool(
+      "korey_ask",
+      { prompt: "Research this question" },
+      { signal: controller.signal },
+    );
+    expect(String(result)).toContain('"status": "awaiting-response"');
+    const pending = JSON.parse(String(result));
+    responses.push(completeResponse("Recovered after cancellation"));
+    const resumed = await host.harness.callAgentTool("korey_resume_operation", {
+      operationId: pending.operationId,
+    });
+    expect(JSON.parse(String(resumed))).toMatchObject({
+      status: "korey-complete",
+      response: "Recovered after cancellation",
+    });
+    expect(calls.filter(({ init }) => init?.method === "POST")).toHaveLength(1);
+  });
+
+  it("does not add a durable consultation to the unresolved-write blocker", async () => {
+    const responses: StubbedFetchResult[] = [
+      jsonResponse(koreyThread()),
+      jsonResponse({ message_id: "accepted-consultation" }, 201),
+      jsonResponse({ message: "Message not found" }, 404),
+    ];
+    const calls = stubFetch(responses);
+    const host = await loadPlugin();
+    storeMapping(host);
+    await host.harness.callAgentTool("korey_ask", {
+      prompt: "Research this question",
+    });
+    const operations = listOperations(
+      host.bb.storage.database(),
+      "thread-test",
+      100,
+    );
+    expect(operations).toHaveLength(1);
+    expect(operations[0]?.status).toBe("awaiting-response");
+    expect(
+      listUnresolvedOperations(
+        host.bb.storage.database(),
+        "thread-test",
+        "korey-thread-1",
+      ),
+    ).toEqual([]);
+    responses.push(
+      identityResponse(),
+      jsonResponse(koreyThread()),
+      jsonResponse(koreyThread()),
+      jsonResponse({ message_id: "requested-change" }, 201),
+      completeResponse("Requested change finished"),
+    );
+    const result = await host.harness.callAgentTool("korey_ask", {
+      mode: "change",
+      prompt: "Make this specifically requested change",
+    });
+    expect(JSON.parse(String(result))).toMatchObject({
+      status: "korey-complete",
+      response: "Requested change finished",
+    });
+    expect(calls.filter(({ init }) => init?.method === "POST")).toHaveLength(2);
+  });
+
   it.each([
     ["missing", {}],
     ["empty", { apiToken: "" }],
@@ -346,7 +654,7 @@ describe("Korey plugin conversations", () => {
       );
       expect(value.response).not.toContain("\uFFFD");
       expect(Buffer.byteLength(value.response)).toBeLessThan(66_000);
-      expect(calls).toHaveLength(3);
+      expect(calls).toHaveLength(5);
     },
   );
 
@@ -607,6 +915,8 @@ describe("Korey plugin conversations", () => {
       "https://api.korey.ai/api/v1/threads/korey-thread-1",
       "https://api.korey.ai/api/v1/threads/korey-thread-1/messages",
       "https://api.korey.ai/api/v1/threads/korey-thread-1/messages/user-message-2/response",
+      "https://api.korey.ai/api/v1/threads/korey-thread-1",
+      "https://api.korey.ai/api/v1/threads/korey-thread-1/messages/user-message-2/response",
     ]);
   });
 
@@ -810,7 +1120,7 @@ describe("Korey connector changes", () => {
       );
       expect(
         listOperations(host.bb.storage.database(), "thread-test", 10),
-      ).toHaveLength(1);
+      ).toHaveLength(2);
       expect(
         getOperation(host.bb.storage.database(), operation.id)?.status,
       ).toBe("reconcile-required");
@@ -1004,7 +1314,13 @@ describe("Korey connector changes", () => {
         },
         { signal: controller.signal },
       );
-      expect(failed).toMatchObject({ isError: true });
+      expect(
+        typeof failed === "string" ? JSON.parse(failed) : failed,
+      ).toMatchObject(
+        stage === "dispatch"
+          ? { isError: true }
+          : { status: "awaiting-response", action: "change", error: null },
+      );
       const operation = listOperations(
         host.bb.storage.database(),
         "thread-test",
@@ -1221,7 +1537,10 @@ describe("Korey Shortcut requests and recovery", () => {
             messagePage([userMessage(original.dispatchedText!, "sent")]),
           );
         }
-        responses.push(completeResponse("Created SC-123"));
+        responses.push(
+          completeResponse("Created SC-123"),
+          completeResponse("Created SC-123"),
+        );
         const tool =
           action === "resume"
             ? "korey_resume_operation"
@@ -1440,7 +1759,15 @@ describe("Korey Shortcut requests and recovery", () => {
       );
       const changeResult = await pending;
       const request = recordedRequest(host);
-      expect(changeResult).toMatchObject({ isError: true });
+      expect(
+        typeof changeResult === "string"
+          ? JSON.parse(changeResult)
+          : changeResult,
+      ).toMatchObject(
+        stage === "dispatch"
+          ? { isError: true }
+          : { status: "awaiting-response", action: "create", error: null },
+      );
       expect(
         getOperation(host.bb.storage.database(), request.operationId),
       ).toMatchObject({
@@ -1743,20 +2070,22 @@ describe("Korey Shortcut requests and recovery", () => {
         jsonResponse(koreyThread()),
         jsonResponse({ message_id: "write-message-1" }, 201),
         additive
-          ? jsonResponse({
-              status: "complete",
-              extra: true,
-              messages: [
-                {
-                  ...assistantMessage("Created SC-123"),
-                  extra: true,
-                  contents: [
-                    { type: "text", text: "Created SC-123", extra: true },
-                    { type: "connector_result" },
-                  ],
-                },
-              ],
-            })
+          ? completedTurn(
+              jsonResponse({
+                status: "complete",
+                extra: true,
+                messages: [
+                  {
+                    ...assistantMessage("Created SC-123"),
+                    extra: true,
+                    contents: [
+                      { type: "text", text: "Created SC-123", extra: true },
+                      { type: "connector_result" },
+                    ],
+                  },
+                ],
+              }),
+            )
           : completeResponse("Created SC-123"),
       ]);
       const host = await loadPlugin();
@@ -1789,7 +2118,7 @@ describe("Korey Shortcut requests and recovery", () => {
         "The user requested this Shortcut change from bb.",
       );
       expect(sentBody.text).not.toContain("confirmation UI");
-      expect(calls).toHaveLength(5);
+      expect(calls).toHaveLength(7);
     },
   );
 

@@ -12,6 +12,7 @@ import {
   operationResolutionPayloadSchema,
   operationResolutionResponseSchema,
   operationRequestSchema,
+  consultationRequestSchema,
   type OperationRequest,
   type ShortcutRequest,
   type ShortcutAttachmentSummary,
@@ -40,6 +41,7 @@ import {
   formatKoreyMessages,
   KoreyApiError,
   KoreyClient,
+  KoreyResponsePendingError,
   type KoreyMessage,
   type KoreyThread,
 } from "./korey-client.js";
@@ -169,8 +171,7 @@ type ChangeInput =
 interface LinkedThread {
   created: boolean;
   koreyThread: KoreyThread;
-  responseText: string;
-  responseTruncated: boolean;
+  operation: OperationRecord;
 }
 
 interface PreparedAttachment {
@@ -239,11 +240,13 @@ function boundedText(text: string): { text: string; truncated: boolean } {
 // Keep history readable across request schema versions. Missing future fields
 // are shown as unknown; this projection is never used to authorize a write.
 const storedRequestSummarySchema = z.object({
-  action: z.enum(["create", "update", "change", "unknown"]).catch("unknown"),
+  action: z
+    .enum(["create", "update", "change", "consult", "unknown"])
+    .catch("unknown"),
   storyId: z.string().nullable().catch(null),
   instruction: z.string().catch("[Unavailable in this request version]"),
   attachments: z.array(z.unknown()).catch([]),
-  koreyOrganization: z.string().catch("Unknown"),
+  koreyOrganization: z.string().nullable().catch("Unknown"),
 });
 
 function operationView(operation: OperationRecord) {
@@ -261,6 +264,12 @@ function operationView(operation: OperationRecord) {
     responseTruncated: operation.responseTruncated,
     resolutionNote: operation.resolutionNote,
     error: operation.error,
+    nextStep:
+      operation.status === "awaiting-response"
+        ? `Use korey_resume_operation or bb korey operation resume ${operation.id}; this only reads the accepted message.`
+        : operation.status === "reconcile-required"
+          ? `Use korey_reconcile_operation or bb korey operation reconcile ${operation.id}; do not send the request again.`
+          : null,
     createdAt: new Date(operation.createdAt).toISOString(),
     updatedAt: new Date(operation.updatedAt).toISOString(),
     approvedAt:
@@ -272,6 +281,27 @@ function operationView(operation: OperationRecord) {
         ? null
         : new Date(operation.completedAt).toISOString(),
   };
+}
+
+function plainOperation(
+  operation: ReturnType<typeof operationView>,
+  appUrl?: string,
+): string {
+  return [
+    `Operation ${operation.operationId} (${operation.status})`,
+    operation.response ??
+      (operation.status === "awaiting-response"
+        ? "Korey accepted the request. Its response is still pending."
+        : "No response recorded."),
+    operation.responseTruncated
+      ? "Response truncated; inspect the Korey conversation for the full answer."
+      : null,
+    operation.error,
+    operation.nextStep,
+    appUrl,
+  ]
+    .filter((part) => part !== null && part !== undefined)
+    .join("\n\n");
 }
 
 function parseCommonCliArgs(argv: string[]) {
@@ -745,6 +775,32 @@ export default async function plugin(bb: BbPluginApi) {
           `Linked Korey thread ${koreyThread.id} is ${koreyThread.state}, not ready`,
         );
       }
+      const unsigned = {
+        operationId: `korey-consult-${randomUUID()}`,
+        bbThreadId,
+        action: "consult" as const,
+        storyId: null,
+        instruction: prompt.trim(),
+        koreyOrganization: null,
+        destination: {
+          kind: "linked-private-thread" as const,
+          koreyThreadId,
+          koreyThreadRevision: koreyThread.updated_at,
+          mappingGeneration: linked.mapping.generation,
+        },
+        attachments: prepared.map(({ summary }) => summary),
+      };
+      const request = consultationRequestSchema.parse({
+        ...unsigned,
+        requestHash: hash(JSON.stringify(unsigned)),
+      });
+      let operation = createOperation(db, request);
+      operation = transitionOperation(db, {
+        id: operation.id,
+        from: "requested",
+        to: "attachment-upload-dispatching",
+        patch: { koreyThreadId },
+      });
       let uploaded: Awaited<ReturnType<KoreyClient["uploadAttachments"]>> = [];
       try {
         uploaded = prepared.length
@@ -754,19 +810,29 @@ export default async function plugin(bb: BbPluginApi) {
               signal,
             )
           : [];
+        signal?.throwIfAborted();
       } catch (error) {
         const outcome = mutationWasRejected(error)
           ? "Korey rejected the attachment upload."
-          : "The attachment upload outcome is unknown and files may consume the conversation quota.";
-        throw new Error(
-          `${outcome} No consultation message was knowingly sent; inspect Korey before retrying. ${error instanceof Error ? error.message : String(error)}`,
-        );
+          : "The attachment upload outcome may be unknown and files may still consume conversation quota.";
+        const detail = `${outcome} No consultation message was knowingly sent; inspect Korey before retrying. ${error instanceof Error ? error.message : String(error)}`;
+        transitionOperation(db, {
+          id: operation.id,
+          from: "attachment-upload-dispatching",
+          to: "definite-failure",
+          patch: { error: detail },
+        });
+        throw new Error(`Korey consultation ${operation.id}: ${detail}`);
       }
-      const consultationId = `korey-consult-${randomUUID()}`;
-      const marker = consultationMarker(consultationId);
-      const consultationText = `${CONSULT_PREFIX}${marker}\n\n${prompt.trim()}`;
+      const consultationText = operationPrompt(request);
       const attachmentIds = uploaded.map((file) => file.id);
-      let messageId: string;
+      // Record exact bytes and attachment IDs before the only message POST.
+      operation = transitionOperation(db, {
+        id: operation.id,
+        from: "attachment-upload-dispatching",
+        to: "message-dispatching",
+        patch: { dispatchedText: consultationText, attachmentIds },
+      });
       try {
         const sent = await api.sendMessage(
           koreyThread.id,
@@ -774,48 +840,59 @@ export default async function plugin(bb: BbPluginApi) {
           signal,
           attachmentIds,
         );
-        messageId = sent.message_id;
+        operation = transitionOperation(db, {
+          id: operation.id,
+          from: "message-dispatching",
+          to: "awaiting-response",
+          patch: { koreyMessageId: sent.message_id },
+        });
       } catch (error) {
         if (mutationWasRejected(error)) {
-          throw new Error(
-            `Korey rejected consultation ${consultationId} before accepting it. ${error instanceof Error ? error.message : String(error)}`,
-          );
+          const detail = `Korey rejected consultation ${operation.id} before accepting it. ${error instanceof Error ? error.message : String(error)}`;
+          transitionOperation(db, {
+            id: operation.id,
+            from: "message-dispatching",
+            to: "definite-failure",
+            patch: { error: detail },
+          });
+          throw new Error(detail);
         }
+        operation = transitionOperation(db, {
+          id: operation.id,
+          from: "message-dispatching",
+          to: "reconcile-required",
+          patch: {
+            error: `Consultation dispatch outcome is unknown. ${error instanceof Error ? error.message : String(error)}`,
+          },
+        });
         let reconciledMessageId: string | null;
         try {
-          reconciledMessageId = await findMessageByRequest(
+          reconciledMessageId = await findOperationMessage(
             api,
-            koreyThread.id,
-            consultationText,
-            attachmentIds,
+            operation,
             signal,
           );
         } catch (reconcileError) {
-          throw new Error(
-            `Korey consultation ${consultationId} has an unknown dispatch outcome and reconciliation failed. Inspect the linked thread; do not resend automatically. ${reconcileError instanceof Error ? reconcileError.message : String(reconcileError)}`,
-          );
+          const detail = `Korey consultation ${operation.id} has an unknown dispatch outcome and reconciliation failed. Use korey_reconcile_operation; do not resend automatically. ${reconcileError instanceof Error ? reconcileError.message : String(reconcileError)}`;
+          updateOperationError(db, operation.id, detail);
+          throw new Error(detail);
         }
         if (reconciledMessageId === null) {
           throw new Error(
-            `Korey consultation ${consultationId} has an unknown dispatch outcome and no exact history match is visible. Inspect the linked thread; do not resend automatically. ${error instanceof Error ? error.message : String(error)}`,
+            `Korey consultation ${operation.id} has an unknown dispatch outcome and no exact history match is visible. Use korey_reconcile_operation; do not resend automatically. ${error instanceof Error ? error.message : String(error)}`,
           );
         }
-        messageId = reconciledMessageId;
+        operation = transitionOperation(db, {
+          id: operation.id,
+          from: "reconcile-required",
+          to: "awaiting-response",
+          patch: { koreyMessageId: reconciledMessageId, error: null },
+        });
       }
-      let messages: KoreyMessage[];
-      try {
-        messages = await api.waitForResponse(koreyThread.id, messageId, signal);
-      } catch (error) {
-        throw new Error(
-          `Korey accepted consultation ${consultationId} as message ${messageId}, but response polling did not complete. Inspect the linked thread instead of resending automatically. ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-      const response = boundedText(formatKoreyMessages(messages));
       return {
         created: linked.created,
         koreyThread,
-        responseText: response.text,
-        responseTruncated: response.truncated,
+        operation: await finishOperationPolling(api, operation, signal),
       };
     });
   }
@@ -951,6 +1028,9 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   function operationPrompt(request: OperationRequest): string {
+    if (request.action === "consult") {
+      return `${CONSULT_PREFIX}${consultationMarker(request.operationId)}\n\n${request.instruction}`;
+    }
     if (request.action !== "change") return shortcutPrompt(request);
     return [
       "The user requested this connector change from bb.",
@@ -1044,7 +1124,8 @@ export default async function plugin(bb: BbPluginApi) {
     signal?: AbortSignal,
   ): Promise<OperationRecord> {
     if (
-      operation.status !== "awaiting-response" ||
+      (operation.status !== "awaiting-response" &&
+        operation.status !== "korey-complete") ||
       operation.koreyThreadId === null ||
       operation.koreyMessageId === null
     ) {
@@ -1052,10 +1133,25 @@ export default async function plugin(bb: BbPluginApi) {
         `Korey operation ${operation.id} cannot resume response polling from ${operation.status}.`,
       );
     }
+    const { koreyThreadId, koreyMessageId } = operation;
+    if (operation.status === "korey-complete") {
+      // Older versions could cache an intermediate answer as complete.
+      // An explicit resume refreshes it using the recorded message, never POST.
+      operation = transitionOperation(db, {
+        id: operation.id,
+        from: "korey-complete",
+        to: "awaiting-response",
+        patch: {
+          completedAt: null,
+          responseText: null,
+          responseTruncated: false,
+        },
+      });
+    }
     try {
       const messages = await api.waitForResponse(
-        operation.koreyThreadId,
-        operation.koreyMessageId,
+        koreyThreadId,
+        koreyMessageId,
         signal,
       );
       const response = boundedText(formatKoreyMessages(messages));
@@ -1071,13 +1167,16 @@ export default async function plugin(bb: BbPluginApi) {
         },
       });
     } catch (error) {
+      if (error instanceof KoreyResponsePendingError || signal?.aborted) {
+        return updateOperationError(db, operation.id, null);
+      }
       updateOperationError(
         db,
         operation.id,
         `Response polling can be resumed safely: ${error instanceof Error ? error.message : String(error)}`,
       );
       throw new Error(
-        `Korey accepted operation ${operation.id}, but response polling did not complete. Use korey_resume_operation or bb korey operation resume ${operation.id}; do not submit a new change request.`,
+        `Korey accepted operation ${operation.id}, but response polling did not complete. Use korey_resume_operation or bb korey operation resume ${operation.id}; do not submit a new request. ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }
@@ -1365,11 +1464,10 @@ export default async function plugin(bb: BbPluginApi) {
       input.files,
     );
     return {
+      ...operationView(result.operation),
       created: result.created,
       koreyThreadId: result.koreyThread.id,
       appUrl: result.koreyThread.app_url,
-      response: result.responseText,
-      responseTruncated: result.responseTruncated,
     };
   }
 
@@ -1419,7 +1517,6 @@ export default async function plugin(bb: BbPluginApi) {
     signal?: AbortSignal,
   ): Promise<OperationRecord> {
     return withOperationLock(bbThreadId, operationId, async (operation) => {
-      if (operation.status === "korey-complete") return operation;
       return finishOperationPolling(await client(), operation, signal);
     });
   }
@@ -1431,10 +1528,10 @@ export default async function plugin(bb: BbPluginApi) {
   ): Promise<{ reconciled: boolean; operation: OperationRecord }> {
     return withOperationLock(bbThreadId, operationId, async (current) => {
       let operation = current;
-      if (operation.status === "korey-complete") {
-        return { reconciled: true, operation };
-      }
-      if (operation.status === "awaiting-response") {
+      if (
+        operation.status === "awaiting-response" ||
+        operation.status === "korey-complete"
+      ) {
         operation = await finishOperationPolling(
           await client(),
           operation,
@@ -1676,9 +1773,10 @@ export default async function plugin(bb: BbPluginApi) {
           return cliOutput(
             parsed.json,
             result,
-            "operationId" in result
-              ? `Operation ${result.operationId} (${result.status})\n\n${result.response ?? "No response recorded."}`
-              : `${result.response}\n\n${result.appUrl}`,
+            plainOperation(
+              result,
+              "appUrl" in result ? result.appUrl : undefined,
+            ),
           );
         }
         if (command === "shortcut") {
@@ -1717,11 +1815,7 @@ export default async function plugin(bb: BbPluginApi) {
             context.signal,
           );
           const value = operationView(operation);
-          return cliOutput(
-            parsed.json,
-            value,
-            `Operation ${operation.id} (${operation.status})\n\n${operation.responseText ?? "No response recorded."}`,
-          );
+          return cliOutput(parsed.json, value, plainOperation(value));
         }
         if (command === "operation") {
           if (parsed.files.length > 0 || parsed.after !== undefined) {
@@ -1767,7 +1861,7 @@ export default async function plugin(bb: BbPluginApi) {
                 : operations
                     .map(
                       (operation) =>
-                        `${operation.operationId}\t${operation.status}\t${operation.action}\t${operation.action === "change" ? "connected services" : (operation.storyId ?? "new Story")}`,
+                        `${operation.operationId}\t${operation.status}\t${operation.action}\t${operation.action === "consult" ? "consultation" : operation.action === "change" ? "connected services" : (operation.storyId ?? "new Story")}`,
                     )
                     .join("\n"),
             );
@@ -1801,7 +1895,7 @@ export default async function plugin(bb: BbPluginApi) {
             return cliOutput(
               parsed.json,
               operationView(operation),
-              `Operation ${operation.id} is ${operation.status}.`,
+              plainOperation(operationView(operation)),
             );
           }
           const result = await reconcileOperation(
@@ -1815,9 +1909,7 @@ export default async function plugin(bb: BbPluginApi) {
               reconciled: result.reconciled,
               ...operationView(result.operation),
             },
-            result.reconciled
-              ? `Operation ${result.operation.id} reconciled as ${result.operation.status}.`
-              : `Operation ${result.operation.id} remains unresolved; inspect Korey and the affected service.`,
+            plainOperation(operationView(result.operation)),
           );
         }
         throw new Error(
@@ -1935,7 +2027,7 @@ export default async function plugin(bb: BbPluginApi) {
     description:
       "Ask Korey to research connected services or perform user-requested changes, including feature-flag updates. Use mode change for requested actions and mode consult for research or drafts. Continues this bb thread's private Korey conversation.",
     instructions:
-      'For "Ask Korey ..." requests, delegate the user’s desired outcome and relevant context. Use mode change when the user requested an action in a connected service, including LaunchDarkly feature-flag updates or Sentry issue changes. The user’s explicit request authorizes that change; ask only if its scope or destination is unclear. Use mode consult for research, questions, and drafts without changes. Prefer korey_shortcut_change for Shortcut Story creation or updates. These modes guide Korey through prompts; connector permissions remain in Korey. Never retry an operation with an unknown outcome by sending another change; inspect, resume, or reconcile its operation ID.',
+      'For "Ask Korey ..." requests, delegate the user’s desired outcome and relevant context. Use mode change when the user requested an action in a connected service, including LaunchDarkly feature-flag updates or Sentry issue changes. The user’s explicit request authorizes that change; ask only if its scope or destination is unclear. Use mode consult for research, questions, and drafts without changes. Prefer korey_shortcut_change for Shortcut Story creation or updates. These modes guide Korey through prompts; connector permissions remain in Korey. Never resend a consultation or change to retrieve its answer or retry an unknown outcome. For awaiting-response, use korey_resume_operation with the existing operation ID. For reconcile-required, use korey_reconcile_operation.',
     parameters: askInputSchema,
     async execute(input, context) {
       return executeJsonTool(() =>
@@ -1963,7 +2055,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: "korey_list_operations",
     description:
-      "List recent Korey change operations from this bb thread or its linked Korey conversation.",
+      "List recent Korey consultations and changes from this bb thread or its linked Korey conversation.",
     parameters: z
       .object({ limit: z.number().int().min(1).max(50).default(20) })
       .strict(),
@@ -1977,7 +2069,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: "korey_get_operation",
     description:
-      "Inspect one Korey change operation without sending or retrying it.",
+      "Inspect one Korey consultation or change operation without sending or retrying it.",
     parameters: z.object({ operationId: z.string().min(1) }).strict(),
     async execute({ operationId }, context) {
       return executeJsonTool(async () =>
@@ -1989,7 +2081,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: "korey_resume_operation",
     description:
-      "Resume safe read-only response polling for a Korey operation whose message ID was already recorded. This never resends a write request.",
+      "Resume read-only polling for an awaiting-response consultation or change, or refresh a korey-complete answer, using its recorded message ID. This never resends the request.",
     parameters: z.object({ operationId: z.string().min(1) }).strict(),
     async execute({ operationId }, context) {
       return executeJsonTool(async () =>
@@ -2036,6 +2128,6 @@ export default async function plugin(bb: BbPluginApi) {
     ],
     skills: ["korey"],
     instructions:
-      'Korey brings its connected services to every bb harness. For "Ask Korey ..." requests, delegate the user’s goal and context. Use korey_ask with mode change for user-requested connector actions, including feature-flag updates, and mode consult for research, analysis, and drafts. Prefer korey_shortcut_change for Shortcut Story creation or updates. An explicit user request authorizes its change without a second confirmation. Connector setup, permissions, and reauthentication remain in Korey; request modes guide Korey through prompts. Never replace or automatically retry an ambiguous operation; inspect, resume, or reconcile its existing operation ID.',
+      'Korey brings its connected services to every bb harness. For "Ask Korey ..." requests, delegate the user’s goal and context. Use korey_ask with mode change for user-requested connector actions, including feature-flag updates, and mode consult for research, analysis, and drafts. Prefer korey_shortcut_change for Shortcut Story creation or updates. An explicit user request authorizes its change without a second confirmation. Connector setup, permissions, and reauthentication remain in Korey; request modes guide Korey through prompts. Consultations and changes return operation IDs. If a response is still pending, use korey_resume_operation with that ID to retrieve the answer. Never resend a request to retrieve its answer or retry an unknown outcome; inspect or reconcile the existing operation.',
   }));
 }
