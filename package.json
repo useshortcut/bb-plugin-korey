@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-korey",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Ask Korey to work with your connected tools from any bb harness.",
   "license": "MIT",
