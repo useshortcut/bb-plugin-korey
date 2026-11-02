@@ -2490,7 +2490,7 @@ it("registers consultation, direct writes, and operation recovery surfaces", asy
   expect(host.harness.registrations.cli?.name).toBe("korey");
   await expect(host.harness.runCli(["status"])).resolves.toEqual({
     exitCode: 0,
-    stdout: "Authenticated as bb User in example.",
+    stdout: "Authenticated as bb User in example with a personal access token.",
     stderr: "",
   });
 });

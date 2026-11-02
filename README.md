@@ -51,16 +51,21 @@ Requires a Korey account and bb 0.43.4 or newer. See
 
 1. Connect the services you want to use in [Korey](https://korey.ai). See
    [Korey’s connector guides](https://korey.ai/docs/connectors/overview) for setup.
-2. [Create a Korey personal access token](https://app.korey.ai/settings/api-tokens)
-   with `threads:read` and `threads:write` scopes.
-3. Install the plugin:
+2. Install the plugin:
 
    ```sh
    bb plugin install https://github.com/useshortcut/bb-plugin-korey
    ```
 
-4. Add the token under **Settings → Installed plugins → Korey** in bb.
-5. Ask your agent: “Ask Korey…”
+3. Select **Connect Korey** under **Settings → Installed plugins → Korey** in
+   bb, or run `bb korey login`, and approve access in the browser. See
+   [connecting your Korey account](docs/usage.md#connecting-your-korey-account).
+
+   Alternatively, [create a Korey personal access token](https://app.korey.ai/settings/api-tokens)
+   with `threads:read` and `threads:write` scopes and add it in the same
+   settings page.
+
+4. Ask your agent: “Ask Korey…”
 
 Only the Korey connection is configured in bb. Keep each service’s connector
 settings and credentials in Korey, where reauthentication is handled across
