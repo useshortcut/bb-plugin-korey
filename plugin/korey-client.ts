@@ -95,8 +95,29 @@ export class KoreyResponsePendingError extends KoreyApiError {
   }
 }
 
-interface KoreyClientOptions {
+/** A bearer token held for one request. */
+export interface KoreyTokenLease {
   token: string;
+  /** Called once the response arrives, so the token can be replaced. */
+  release(): void;
+}
+
+/** Supplies bearer tokens that can change while a client is in use. */
+export interface KoreyCredentials {
+  acquire(signal?: AbortSignal): Promise<KoreyTokenLease>;
+  /** Replaces a token Korey rejected with 401. */
+  replaceRejectedToken?(token: string, signal?: AbortSignal): Promise<void>;
+}
+
+function isTransient(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    Object.getOwnPropertyDescriptor(error, "transient")?.value === true
+  );
+}
+
+interface KoreyClientOptions {
+  token: string | KoreyCredentials;
   baseUrl?: string;
   fetch?: typeof globalThis.fetch;
   requestTimeoutMs?: number;
@@ -201,17 +222,48 @@ export function formatKoreyMessages(messages: readonly KoreyMessage[]): string {
   return parts.join("\n\n");
 }
 
+// Maps a failure to obtain a token. No request was sent, so a write is a
+// definite rejection. Network failures while refreshing stay retryable for
+// reads; a rejected or missing sign-in is final.
+function credentialError(
+  error: unknown,
+  method: string,
+  callerSignal: AbortSignal | undefined,
+  timeoutSignal: AbortSignal,
+): unknown {
+  const notSent = method !== "GET";
+  if (callerSignal?.aborted) {
+    return new KoreyApiError("Korey request was cancelled", null, notSent);
+  }
+  if (timeoutSignal.aborted) {
+    return new KoreyApiError("Korey request timed out", null, notSent);
+  }
+  if (!notSent && !isTransient(error)) return error;
+  return new KoreyApiError(
+    error instanceof Error ? error.message : String(error),
+    null,
+    notSent,
+  );
+}
+
 export class KoreyClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly requestTimeoutMs: number;
   private readonly responseTimeoutMs: number;
   private readonly pollIntervalMs: number;
-  private readonly token: string;
+  private readonly credentials: KoreyCredentials;
 
   constructor(options: KoreyClientOptions) {
-    this.token = options.token.trim();
-    if (this.token.length === 0) throw new Error("Korey API token is empty");
+    if (typeof options.token === "string") {
+      const token = options.token.trim();
+      if (token.length === 0) throw new Error("Korey API token is empty");
+      this.credentials = {
+        acquire: async () => ({ token, release: () => undefined }),
+      };
+    } else {
+      this.credentials = options.token;
+    }
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/u, "");
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.requestTimeoutMs =
@@ -224,14 +276,27 @@ export class KoreyClient {
   private async fetchPath(
     path: string,
     options: RequestOptions = {},
+    retryDeadline?: number,
   ): Promise<{ headers: Headers; status: number; text: string }> {
+    // A retry after a 401 shares the original request's deadline.
+    const deadline =
+      retryDeadline ??
+      Date.now() +
+        Math.max(1, Math.floor(options.timeoutMs ?? this.requestTimeoutMs));
     const timeoutSignal = AbortSignal.timeout(
-      Math.max(1, Math.floor(options.timeoutMs ?? this.requestTimeoutMs)),
+      Math.max(1, deadline - Date.now()),
     );
     const signal = options.signal
       ? AbortSignal.any([options.signal, timeoutSignal])
       : timeoutSignal;
     const method = options.method ?? "GET";
+    let lease: KoreyTokenLease;
+    try {
+      lease = await this.credentials.acquire(signal);
+    } catch (error) {
+      throw credentialError(error, method, options.signal, timeoutSignal);
+    }
+    let result: { headers: Headers; status: number; text: string };
     try {
       signal.throwIfAborted();
       const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
@@ -240,7 +305,7 @@ export class KoreyClient {
         redirect: method === "GET" ? "follow" : "manual",
         headers: {
           accept: "application/json",
-          authorization: `Bearer ${this.token}`,
+          authorization: `Bearer ${lease.token}`,
           ...(options.body === undefined || options.form !== undefined
             ? {}
             : { "content-type": "application/json" }),
@@ -252,7 +317,7 @@ export class KoreyClient {
             : { body: JSON.stringify(options.body) }),
         signal,
       });
-      return {
+      result = {
         headers: response.headers,
         status: response.status,
         text: await response.text(),
@@ -267,7 +332,27 @@ export class KoreyClient {
       throw new KoreyApiError(
         `Could not reach Korey: ${error instanceof Error ? error.message : String(error)}`,
       );
+    } finally {
+      lease.release();
     }
+    if (result.status !== 401 || !this.credentials.replaceRejectedToken) {
+      return result;
+    }
+    // A 401 is a documented rejection, but mutations are still never resent
+    // automatically. Replacing the token lets the next request succeed.
+    if (method !== "GET") {
+      await this.credentials
+        .replaceRejectedToken(lease.token, signal)
+        .catch(() => undefined);
+      return result;
+    }
+    if (retryDeadline !== undefined) return result;
+    try {
+      await this.credentials.replaceRejectedToken(lease.token, signal);
+    } catch (error) {
+      throw credentialError(error, method, options.signal, timeoutSignal);
+    }
+    return this.fetchPath(path, options, deadline);
   }
 
   private async request<T>(

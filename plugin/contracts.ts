@@ -71,3 +71,31 @@ export type ShortcutRequest = z.infer<typeof shortcutRequestSchema>;
 export type ShortcutAttachmentSummary = z.infer<
   typeof shortcutAttachmentSummarySchema
 >;
+
+export const CONNECTION_SIGNAL_CHANNEL = "connection";
+
+export const connectionViewSchema = z.strictObject({
+  method: z.enum(["oauth", "token", "none"]),
+  account: z.string().nullable(),
+  error: z.string().nullable(),
+  tokenSaved: z.boolean(),
+});
+
+export type ConnectionView = z.infer<typeof connectionViewSchema>;
+
+// Plain object rather than defineRpcContract: the app bundle imports this file
+// and must not load the server SDK entry.
+export const connectionRpcContract = {
+  "connection.status": { input: z.null(), output: connectionViewSchema },
+  "connection.start": {
+    input: z.null(),
+    output: z.strictObject({ authorizationUrl: z.string().min(1) }),
+  },
+  "connection.complete": {
+    input: z.strictObject({ redirectUrl: z.string().trim().min(1) }),
+    output: connectionViewSchema,
+  },
+  "connection.disconnect": { input: z.null(), output: connectionViewSchema },
+  // bb's settings form cannot clear a secret field.
+  "connection.removeToken": { input: z.null(), output: connectionViewSchema },
+} as const;

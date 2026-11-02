@@ -2,8 +2,39 @@
 
 For setup and example requests, start with the [README](../README.md).
 Connectors, their permissions, and reauthentication are managed in Korey.
-The plugin uses your [Korey personal access token](https://app.korey.ai/settings/api-tokens)
-to continue private conversations from bb.
+The plugin signs in to your Korey account, or uses a
+[Korey personal access token](https://app.korey.ai/settings/api-tokens), to
+continue private conversations from bb.
+
+## Connecting your Korey account
+
+Select **Connect Korey** under **Settings → Installed plugins → Korey**, or run:
+
+```sh
+bb korey login
+```
+
+Approve access in the browser. Korey redirects back to the bb server on
+`127.0.0.1`, and bb finishes connecting. If the browser runs on another
+computer, that last page cannot load. Copy its address and complete the
+sign-in from bb:
+
+```sh
+bb korey login 'http://127.0.0.1:38886/api/v1/plugins/korey/http/oauth/callback?code=...&state=...'
+```
+
+The settings section accepts the same address. A sign-in link expires after
+15 minutes or when the plugin reloads.
+
+A connected account takes precedence over the personal access token setting.
+`bb korey status` reports which one is in use. **Disconnect** or
+`bb korey logout` revokes the current access token, removes the connection, and
+falls back to the token setting when one is configured.
+
+bb's settings form cannot clear a secret field, so the **Korey account**
+section also offers **Remove personal access token**. Removing the token
+deletes it from bb only; revoke it in Korey to invalidate it. From the CLI, run
+`bb plugin config korey unset apiToken`.
 
 ## CLI and agent tools
 

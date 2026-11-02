@@ -149,6 +149,54 @@ owned threads if search misses; each traversal stops after 20 pages. The public
 spec retrieved on 2026-09-24 lists `threads:read` and `threads:write`; the README
 uses those names, but token creation was not tested against an account.
 
+## OAuth connection
+
+Korey's authorization server is described at
+`https://api.korey.ai/.well-known/oauth-authorization-server`. Korey stores
+OAuth access tokens next to personal access tokens, so `/api/v1` accepts both
+with the same scope checks. The pinned OpenAPI document still describes only
+personal access tokens.
+
+`plugin/oauth.ts` implements the protocol, and `plugin/connection.ts` runs the
+sign-in. Each installation registers its own public client, named
+"bb Korey plugin", through dynamic client registration. Its redirect URI is the
+plugin's callback route on the bb server's loopback address. Korey ignores the
+port when matching loopback redirect URIs. A shared client ID would not work:
+Korey keeps one active token per user and client, so signing in on a second
+computer would sign out the first.
+
+The plugin reuses a registration only while a saved connection or an
+unfinished sign-in uses it. Any other sign-in registers a new client, because
+Korey associates a registration with the organization that approves it, and a
+client can be deleted in Korey. The plugin forgets its registration on `logout`
+and when Korey rejects the saved sign-in.
+
+Sign-in uses the authorization code flow with PKCE (S256) and a single-use
+`state`. Pending sign-ins are kept in memory for 15 minutes, matching Korey's
+consent window, and are lost on reload. Credentials are stored as JSON in the
+secret `oauthCredentials` setting.
+
+Secret settings keep the credentials out of the plugin database and away from
+the frontend. bb has no hidden settings, so the field appears in the settings
+form even though users should not edit it, and the form cannot clear secret
+fields. The **Korey
+account** section provides Disconnect and token removal instead. Move the
+credentials if bb adds hidden secret settings or a plugin secret store.
+
+Access tokens last one hour. Refresh tokens last 30 days and are single-use;
+each refresh also revokes the previous access token. The token source refreshes
+two minutes before expiry, shares one refresh between concurrent requests, and
+saves the rotated token before using it. A caller can stop waiting, but the
+refresh itself is not cancelled. If Korey rotates the token and the response is
+lost, the user must sign in again. A read that receives `401` refreshes and
+retries once. A mutation that receives `401` is not resent; it remains a
+documented rejection, and the token is replaced for the next request.
+
+`logout` revokes the access token, identifying the client with HTTP Basic
+authentication, and deletes the saved credentials.
+
+Sign-in was verified against a live Korey account on 2026-10-31.
+
 ## Distribution
 
 This repository is intentionally marked `private` in `package.json` to prevent

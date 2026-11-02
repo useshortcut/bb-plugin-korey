@@ -8,15 +8,19 @@ import {
   type AttachmentFile,
 } from "./attachments.js";
 import {
+  CONNECTION_SIGNAL_CHANNEL,
+  connectionRpcContract,
   OPERATION_RESOLUTION_RENDERER_ID,
   operationResolutionPayloadSchema,
   operationResolutionResponseSchema,
   operationRequestSchema,
   consultationRequestSchema,
+  type ConnectionView,
   type OperationRequest,
   type ShortcutRequest,
   type ShortcutAttachmentSummary,
 } from "./contracts.js";
+import { callbackPage, KoreyConnection } from "./connection.js";
 import {
   beginMappingCreate,
   completeMappingCreate,
@@ -42,9 +46,11 @@ import {
   KoreyApiError,
   KoreyClient,
   KoreyResponsePendingError,
+  type KoreyIdentity,
   type KoreyMessage,
   type KoreyThread,
 } from "./korey-client.js";
+import { OAUTH_CALLBACK_PATH } from "./oauth.js";
 
 const CONSULT_PREFIX = [
   "This request is consultation-only.",
@@ -56,13 +62,23 @@ const MAPPING_MARKER_PREFIX = "bb-korey";
 const MAX_STORED_RESPONSE_BYTES = 64 * 1024;
 const INTERACTION_TIMEOUT_MS = 10 * 60_000;
 const API_TOKEN_URL = "https://app.korey.ai/settings/api-tokens";
-const TOKEN_SETUP_GUIDANCE = `Create a Korey personal access token at ${API_TOKEN_URL} and add it under Settings -> Installed plugins -> Korey.`;
+const TOKEN_SETUP_GUIDANCE = `Connect your Korey account with \`bb korey login\` or under Settings -> Installed plugins -> Korey. Alternatively, create a Korey personal access token at ${API_TOKEN_URL} and add it there.`;
 
 const CLI_COMMANDS = [
   {
     name: "status",
     summary: "Check Korey authentication",
     usage: "bb korey status [--json]",
+  },
+  {
+    name: "login",
+    summary: "Connect your Korey account with OAuth",
+    usage: "bb korey login [<redirect-url>] [--json]",
+  },
+  {
+    name: "logout",
+    summary: "Disconnect your Korey account",
+    usage: "bb korey logout [--json]",
   },
   {
     name: "threads",
@@ -405,6 +421,10 @@ function plainConversation(
   ].join("\n");
 }
 
+function accountLabel(identity: KoreyIdentity): string {
+  return `${identity.name ?? identity.email ?? identity.sub} in ${identity.korey_organization_slug}`;
+}
+
 function usage(): string {
   return ["Usage:", ...CLI_COMMANDS.map(({ usage }) => `  ${usage}`)].join(
     "\n",
@@ -442,19 +462,127 @@ export default async function plugin(bb: BbPluginApi) {
       description: `Create a token at ${API_TOKEN_URL} with threads:read and threads:write scopes.`,
       secret: true,
     },
+    oauthCredentials: {
+      type: "string",
+      label: "Korey account connection",
+      description:
+        "Saved by Connect Korey and `bb korey login`. Remove it with Disconnect below or `bb korey logout`.",
+      secret: true,
+    },
   });
 
-  if (!(await settings.get()).apiToken?.trim()) {
+  const connection = new KoreyConnection({
+    kv: bb.storage.kv,
+    callbackUrl: () =>
+      `${bb.server.loopbackBaseUrl}/api/v1/plugins/${bb.pluginId}/http${OAUTH_CALLBACK_PATH}`,
+    readCredentials: async () => (await settings.get()).oauthCredentials,
+    writeCredentials: async (value) => {
+      await settings.experimental_set({ oauthCredentials: value });
+    },
+  });
+
+  // Covers sign-in, token refresh, and edits from the settings form or CLI.
+  settings.onChange(() => bb.realtime.publish(CONNECTION_SIGNAL_CHANNEL, null));
+
+  async function authState() {
+    const values = await settings.get();
+    const apiToken = values.apiToken?.trim() || null;
+    // A connected Korey account takes precedence over the personal access token.
+    const method: ConnectionView["method"] = values.oauthCredentials?.trim()
+      ? "oauth"
+      : apiToken !== null
+        ? "token"
+        : "none";
+    return { method, apiToken };
+  }
+
+  // bb clears this notice only when the plugin reloads.
+  const setupNoticeShown = (await authState()).method === "none";
+  if (setupNoticeShown) {
     bb.status.needsConfiguration(TOKEN_SETUP_GUIDANCE);
+  }
+  const RELOAD_HINT = "Run `bb plugin reload korey` to clear the setup notice.";
+
+  function clientFor(state: Awaited<ReturnType<typeof authState>>) {
+    if (state.method === "oauth") {
+      return new KoreyClient({ token: connection.tokens });
+    }
+    if (state.apiToken === null) {
+      throw new Error(`Korey is not configured. ${TOKEN_SETUP_GUIDANCE}`);
+    }
+    return new KoreyClient({ token: state.apiToken });
   }
 
   async function client(): Promise<KoreyClient> {
-    const apiToken = (await settings.get()).apiToken?.trim();
-    if (!apiToken) {
-      throw new Error(`Korey is not configured. ${TOKEN_SETUP_GUIDANCE}`);
-    }
-    return new KoreyClient({ token: apiToken });
+    return clientFor(await authState());
   }
+
+  async function connectionView(): Promise<ConnectionView> {
+    const state = await authState();
+    const { method } = state;
+    const tokenSaved = state.apiToken !== null;
+    if (method === "none") {
+      return { method, account: null, error: null, tokenSaved };
+    }
+    try {
+      const identity = await clientFor(state).identity();
+      return {
+        method,
+        account: accountLabel(identity),
+        error: null,
+        tokenSaved,
+      };
+    } catch (error) {
+      return {
+        method,
+        account: null,
+        error: error instanceof Error ? error.message : String(error),
+        tokenSaved,
+      };
+    }
+  }
+
+  bb.rpc.register(connectionRpcContract, {
+    "connection.status": () => connectionView(),
+    "connection.start": async () => ({
+      authorizationUrl: (await connection.start()).authorizationUrl,
+    }),
+    "connection.complete": async ({ redirectUrl }) => {
+      await connection.complete(redirectUrl);
+      return connectionView();
+    },
+    "connection.disconnect": async () => {
+      await connection.disconnect();
+      return connectionView();
+    },
+    // Deletes only bb's copy; the token stays valid in Korey until revoked there.
+    "connection.removeToken": async () => {
+      await settings.experimental_set({ apiToken: null });
+      return connectionView();
+    },
+  });
+
+  bb.http.route("GET", OAUTH_CALLBACK_PATH, async (context) => {
+    try {
+      await connection.complete(context.req.url);
+    } catch (error) {
+      return callbackPage(
+        "Korey sign-in failed",
+        `${error instanceof Error ? error.message : String(error)} You can start again from bb.`,
+        400,
+      );
+    }
+    const view = await connectionView();
+    const connected =
+      view.account === null
+        ? "bb is connected to Korey."
+        : `bb is connected to Korey as ${view.account}.`;
+    return callbackPage(
+      "Connected to Korey",
+      `${connected} ${setupNoticeShown ? `${RELOAD_HINT} ` : ""}You can close this tab.`,
+      200,
+    );
+  });
 
   const threadTails = new Map<string, Promise<void>>();
   async function withThreadLock<T>(
@@ -1664,11 +1792,75 @@ export default async function plugin(bb: BbPluginApi) {
           ) {
             throw new Error("status accepts only --json");
           }
-          const identity = await (await client()).identity(context.signal);
+          const state = await authState();
+          const { method } = state;
+          const identity = await clientFor(state).identity(context.signal);
           return cliOutput(
             parsed.json,
-            identity,
-            `Authenticated as ${identity.name ?? identity.email ?? identity.sub} in ${identity.korey_organization_slug}.`,
+            { ...identity, authMethod: method },
+            `Authenticated as ${accountLabel(identity)} with ${method === "oauth" ? "OAuth" : "a personal access token"}.`,
+          );
+        }
+        if (command === "login") {
+          if (
+            parsed.positional.length > 1 ||
+            parsed.bbThreadId !== undefined ||
+            parsed.files.length > 0 ||
+            parsed.after !== undefined ||
+            parsed.limit !== undefined
+          ) {
+            throw new Error(
+              "login accepts only an optional redirect URL and --json",
+            );
+          }
+          const redirectUrl = parsed.positional[0];
+          if (redirectUrl !== undefined) {
+            await connection.complete(redirectUrl);
+            const identity = await (await client()).identity(context.signal);
+            return cliOutput(
+              parsed.json,
+              { ...identity, authMethod: "oauth" },
+              `Connected to Korey as ${accountLabel(identity)}.${setupNoticeShown ? ` ${RELOAD_HINT}` : ""}`,
+            );
+          }
+          const { authorizationUrl, expiresAt } = await connection.start();
+          return cliOutput(
+            parsed.json,
+            { authorizationUrl, expiresAt: new Date(expiresAt).toISOString() },
+            [
+              "Open this URL to connect bb to your Korey account:",
+              "",
+              `  ${authorizationUrl}`,
+              "",
+              "bb finishes connecting when you approve access. If the browser ends on a page that cannot load, for example because bb runs on another computer, copy that page's address and run:",
+              "",
+              "  bb korey login '<address>'",
+              "",
+              "The link expires in 15 minutes.",
+            ].join("\n"),
+          );
+        }
+        if (command === "logout") {
+          if (
+            parsed.positional.length > 0 ||
+            parsed.bbThreadId !== undefined ||
+            parsed.files.length > 0 ||
+            parsed.after !== undefined ||
+            parsed.limit !== undefined
+          ) {
+            throw new Error("logout accepts only --json");
+          }
+          const result = await connection.disconnect();
+          const fallback =
+            (await authState()).method === "token"
+              ? " The personal access token setting is used from now on."
+              : "";
+          return cliOutput(
+            parsed.json,
+            result,
+            result.wasConnected
+              ? `Disconnected your Korey account.${fallback}`
+              : `No Korey account was connected.${fallback}`,
           );
         }
         if (command === "threads") {
