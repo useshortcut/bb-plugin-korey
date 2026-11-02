@@ -91,7 +91,7 @@ export class KoreyOAuth {
         "content-type": "application/json",
       },
       JSON.stringify({
-        client_name: "bb",
+        client_name: "bb Korey plugin",
         redirect_uris: [redirectUri],
         token_endpoint_auth_method: "none",
         grant_types: ["authorization_code", "refresh_token"],

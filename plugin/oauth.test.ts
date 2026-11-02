@@ -100,14 +100,17 @@ describe("KoreyOAuth", () => {
 
   it("registers a public loopback client", async () => {
     const { calls, fetch } = mockFetch([
-      jsonResponse({ client_id: "kc_client", client_name: "bb" }, 201),
+      jsonResponse(
+        { client_id: "kc_client", client_name: "bb Korey plugin" },
+        201,
+      ),
     ]);
     await expect(
       new KoreyOAuth({ fetch }).register(client.redirectUri),
     ).resolves.toEqual(client);
     expect(calls[0]?.url).toBe("https://api.korey.ai/oauth/register");
     expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
-      client_name: "bb",
+      client_name: "bb Korey plugin",
       redirect_uris: [client.redirectUri],
       token_endpoint_auth_method: "none",
       grant_types: ["authorization_code", "refresh_token"],
