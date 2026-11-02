@@ -35,12 +35,17 @@ interface FetchCall {
 }
 
 // Answers Korey's OAuth and identity endpoints the way production does.
-function stubKorey(scope = "threads:read threads:write") {
+function stubKorey(
+  scope = "threads:read threads:write",
+  override?: (url: string) => Response | undefined,
+) {
   const calls: FetchCall[] = [];
   let issued = 0;
   vi.stubGlobal("fetch", async (input: unknown, init?: RequestInit) => {
     const url = String(input);
     calls.push({ url, init });
+    const overridden = override?.(url);
+    if (overridden !== undefined) return overridden;
     if (url === "https://api.korey.ai/oauth/register") {
       return jsonResponse({ client_id: `kc_client_${calls.length}` }, 201);
     }
@@ -246,7 +251,7 @@ describe("Korey OAuth connection", () => {
     );
   });
 
-  it("reuses the client registration for later sign-ins", async () => {
+  it("reuses the registration of an unfinished sign-in", async () => {
     const korey = stubKorey();
     const host = await loadPlugin();
     const first = await startLogin(host);
@@ -256,6 +261,53 @@ describe("Korey OAuth connection", () => {
       first.url.searchParams.get("client_id"),
     );
     expect(second.state).not.toBe(first.state);
+  });
+
+  it("reuses the registration while a saved connection uses it", async () => {
+    const korey = stubKorey();
+    const host = await loadPlugin();
+    const { state } = await startLogin(host);
+    await callback(host, `code=code-1&state=${state}`);
+    const again = await startLogin(host);
+    expect(korey.to("/oauth/register")).toHaveLength(1);
+    expect(again.url.searchParams.get("client_id")).toBe("kc_client_1");
+  });
+
+  it("registers a new client when no saved connection uses the stored one", async () => {
+    const korey = stubKorey();
+    const host = await loadPlugin();
+    const { state } = await startLogin(host);
+    await callback(host, `code=code-1&state=${state}`);
+    await host.harness.behavior.setSettings({ oauthCredentials: null });
+    await startLogin(host);
+    expect(korey.to("/oauth/register")).toHaveLength(2);
+  });
+
+  it("registers a new client after Korey rejects the saved sign-in", async () => {
+    let clientDeleted = false;
+    const korey = stubKorey(undefined, (url) => {
+      if (!clientDeleted) return undefined;
+      if (url === "https://api.korey.ai/api/v1/me") {
+        return jsonResponse({ error: "unauthorized" }, 401);
+      }
+      if (url === "https://api.korey.ai/oauth/token") {
+        return jsonResponse({ error: "invalid_client" }, 401);
+      }
+      return undefined;
+    });
+    const host = await loadPlugin({});
+    const { state } = await startLogin(host);
+    await callback(host, `code=code-1&state=${state}`);
+
+    clientDeleted = true;
+    const status = await host.harness.runCli(["status"]);
+    expect(status.exitCode).toBe(1);
+    expect(status.stderr).toContain("Korey sign-in expired or was revoked");
+
+    clientDeleted = false;
+    const again = await startLogin(host);
+    expect(korey.to("/oauth/register")).toHaveLength(2);
+    expect(again.url.searchParams.get("client_id")).not.toBe("kc_client_1");
   });
 
   it("refreshes an expiring token and keeps the rotation after a reload", async () => {

@@ -243,7 +243,17 @@ export class KoreyOAuth {
 export interface OAuthCredentialStore {
   load(): Promise<OAuthCredentials | null>;
   save(credentials: OAuthCredentials): Promise<void>;
+  /** Called when Korey no longer accepts the saved sign-in. */
+  rejected?(): Promise<void>;
 }
+
+// Korey returns these when the refresh token or its client is no longer valid,
+// for example after the sign-in expired or the client was deleted.
+const REJECTED_SIGN_IN_CODES = new Set([
+  "invalid_client",
+  "invalid_grant",
+  "unauthorized_client",
+]);
 
 function untilAborted<T>(
   promise: Promise<T>,
@@ -354,11 +364,13 @@ export class OAuthTokenSource implements KoreyCredentials {
         } catch (error) {
           if (
             error instanceof KoreyOAuthError &&
-            error.code === "invalid_grant"
+            error.code !== null &&
+            REJECTED_SIGN_IN_CODES.has(error.code)
           ) {
+            await this.store.rejected?.().catch(() => undefined);
             throw new KoreyOAuthError(
-              "Korey sign-in expired. Reconnect with `bb korey login` or under Settings -> Installed plugins -> Korey.",
-              "invalid_grant",
+              "Korey sign-in expired or was revoked. Reconnect with `bb korey login` or under Settings -> Installed plugins -> Korey.",
+              error.code,
             );
           }
           throw error;

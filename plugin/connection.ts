@@ -77,6 +77,7 @@ export class KoreyConnection {
         load: () => this.saved(),
         save: (credentials) =>
           options.writeCredentials(JSON.stringify(credentials)),
+        rejected: () => options.kv.delete(CLIENT_KEY),
       },
       this.now,
     );
@@ -166,8 +167,6 @@ export class KoreyConnection {
       );
     }
     await this.options.writeCredentials(null);
-    // Korey associates a registration with the organization that approves it,
-    // so a later sign-in to another organization needs a new one.
     await this.options.kv.delete(CLIENT_KEY);
     this.pending.clear();
     return { wasConnected, revoked };
@@ -177,14 +176,26 @@ export class KoreyConnection {
     return parseCredentials(await this.options.readCredentials());
   }
 
+  // Reuse a registration only while a saved connection or an unfinished
+  // sign-in uses it. A fresh sign-in registers a new client, so it works after
+  // the client was deleted in Korey, and with an organization other than the
+  // one that approved the previous client.
   private async client(): Promise<OAuthClient> {
     const redirectUri = this.options.callbackUrl();
+    const sameCallback = (client: OAuthClient) =>
+      withoutPort(client.redirectUri) === withoutPort(redirectUri);
+    const pending = [...this.pending.values()].at(-1)?.client;
+    if (pending !== undefined && sameCallback(pending)) {
+      return { clientId: pending.clientId, redirectUri };
+    }
     const stored = oauthClientSchema.safeParse(
       await this.options.kv.get(CLIENT_KEY),
     );
+    const saved = await this.saved().catch(() => null);
     if (
       stored.success &&
-      withoutPort(stored.data.redirectUri) === withoutPort(redirectUri)
+      saved?.clientId === stored.data.clientId &&
+      sameCallback(stored.data)
     ) {
       return { clientId: stored.data.clientId, redirectUri };
     }

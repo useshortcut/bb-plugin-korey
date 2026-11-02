@@ -323,16 +323,36 @@ describe("OAuthTokenSource", () => {
     expect(calls).toHaveLength(1);
   });
 
-  it("asks the user to reconnect when the refresh token is rejected", async () => {
-    const { fetch } = mockFetch([
-      jsonResponse({ error: "invalid_grant" }, 400),
-    ]);
+  it.each([
+    ["an expired refresh token", 400, "invalid_grant"],
+    ["a deleted client", 401, "invalid_client"],
+  ])("asks the user to reconnect after %s", async (_label, status, error) => {
+    const { fetch } = mockFetch([jsonResponse({ error }, status)]);
     const { store, saved } = memoryStore(credentials({ expiresAt: 1 }));
-    const source = new OAuthTokenSource(new KoreyOAuth({ fetch }), store);
+    const rejected = vi.fn<() => Promise<void>>(async () => undefined);
+    const source = new OAuthTokenSource(new KoreyOAuth({ fetch }), {
+      ...store,
+      rejected,
+    });
     await expect(tokenOf(source)).rejects.toThrow(
-      "Korey sign-in expired. Reconnect with `bb korey login`",
+      "Korey sign-in expired or was revoked. Reconnect with `bb korey login`",
     );
+    expect(rejected).toHaveBeenCalledOnce();
     expect(saved).toHaveLength(0);
+  });
+
+  it("keeps the registration after a network failure", async () => {
+    const fetch: typeof globalThis.fetch = async () => {
+      throw new Error("connection reset");
+    };
+    const { store } = memoryStore(credentials({ expiresAt: 1 }));
+    const rejected = vi.fn<() => Promise<void>>(async () => undefined);
+    const source = new OAuthTokenSource(new KoreyOAuth({ fetch }), {
+      ...store,
+      rejected,
+    });
+    await expect(tokenOf(source)).rejects.toThrow("connection reset");
+    expect(rejected).not.toHaveBeenCalled();
   });
 });
 

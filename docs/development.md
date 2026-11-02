@@ -158,13 +158,18 @@ with the same scope checks. The pinned OpenAPI document still describes only
 personal access tokens.
 
 `plugin/oauth.ts` implements the protocol, and `plugin/connection.ts` runs the
-sign-in. The plugin registers one public client per installation through
-dynamic client registration. Its redirect URI is the plugin's callback route on
-the bb server's loopback address. Korey ignores the port when matching loopback
-redirect URIs. A shared client ID would not work: Korey keeps one active token
-per user and client, so signing in on a second computer would sign out the
-first. Korey associates a registration with the organization that approves it,
-so `logout` discards the registration.
+sign-in. Each installation registers its own public client, named
+"bb Korey plugin", through dynamic client registration. Its redirect URI is the
+plugin's callback route on the bb server's loopback address. Korey ignores the
+port when matching loopback redirect URIs. A shared client ID would not work:
+Korey keeps one active token per user and client, so signing in on a second
+computer would sign out the first.
+
+The plugin reuses a registration only while a saved connection or an
+unfinished sign-in uses it. Any other sign-in registers a new client, because
+Korey associates a registration with the organization that approves it, and a
+client can be deleted in Korey. The plugin forgets its registration on `logout`
+and when Korey rejects the saved sign-in.
 
 Sign-in uses the authorization code flow with PKCE (S256) and a single-use
 `state`. Pending sign-ins are kept in memory for 15 minutes, matching Korey's
